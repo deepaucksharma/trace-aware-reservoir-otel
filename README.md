@@ -1,5 +1,8 @@
 # Trace-Aware Reservoir Sampling for OpenTelemetry
 
+[![CI](https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel/actions/workflows/ci.yml/badge.svg)](https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/deepaucksharma-nr/trace-aware-reservoir-otel)](https://goreportcard.com/report/github.com/deepaucksharma-nr/trace-aware-reservoir-otel)
+
 This project implements a specialized trace-aware reservoir sampling processor for the OpenTelemetry Collector. It provides statistically sound sampling while preserving complete traces.
 
 ## Features

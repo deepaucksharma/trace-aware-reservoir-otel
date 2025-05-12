@@ -86,8 +86,7 @@ func ThroughputTest(t *testing.T) {
 			// Generate traces
 			traces := framework.GenerateTestSpans(workerSpans, config.SpansPerTrace)
 			
-			// Calculate time between sends to maintain desired rate
-			sendInterval := time.Second / time.Duration(workerRate)
+			// Worker rate is used in the target interval calculation below
 			
 			// Send spans at the specified rate
 			sentSpans := 0

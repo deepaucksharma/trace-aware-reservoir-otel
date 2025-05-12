@@ -1,5 +1,17 @@
 package tests
 
+// LatencyResult holds statistics about latency measurements
+type LatencyResult struct {
+	Rate      int
+	Min       time.Duration
+	Max       time.Duration
+	Mean      time.Duration
+	P50       time.Duration
+	P90       time.Duration
+	P99       time.Duration
+	StdDev    time.Duration
+}
+
 import (
 	"context"
 	"fmt"
@@ -50,19 +62,7 @@ func LatencyTest(t *testing.T) {
 	// Define test rates (spans per second)
 	rates := []int{1000, 5000, 10000, 20000}
 	samplesPerRate := 1000 // Number of latency samples to collect for each rate
-	
-	// Prepare results
-	type LatencyResult struct {
-		Rate      int
-		Min       time.Duration
-		Max       time.Duration
-		Mean      time.Duration
-		P50       time.Duration
-		P90       time.Duration
-		P99       time.Duration
-		StdDev    time.Duration
-	}
-	
+
 	var results []LatencyResult
 	
 	// Create tracer for direct span generation

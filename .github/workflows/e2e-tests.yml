@@ -1,0 +1,63 @@
+name: End-to-End Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Test type to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - throughput
+          - latency
+          - durability
+          - resource
+          - trace
+
+jobs:
+  e2e-test:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          check-latest: true
+
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          go mod tidy
+          go mod verify
+
+      - name: Build Collector
+        run: make build
+
+      - name: Run E2E tests
+        run: |
+          cd e2e/tests
+          case "${{ github.event.inputs.test_type }}" in
+            all)
+              go test -v -all
+              ;;
+            throughput)
+              go test -v -throughput
+              ;;
+            latency)
+              go test -v -latency
+              ;;
+            durability)
+              go test -v -durability
+              ;;
+            resource)
+              go test -v -resource
+              ;;
+            trace)
+              go test -v -trace
+              ;;
+          esac

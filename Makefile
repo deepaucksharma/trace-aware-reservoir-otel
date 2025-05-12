@@ -1,4 +1,4 @@
-.PHONY: all build test lint clean protobuf generate
+.PHONY: all build test lint clean protobuf generate bench coverage ci
 
 # Project variables
 BINARY_NAME=pte-collector
@@ -19,7 +19,7 @@ PROTOC=protoc
 PROTO_DIR=internal/processor/reservoirsampler/spanprotos
 PROTO_FILES=$(wildcard $(PROTO_DIR)/*.proto)
 
-all: protobuf generate build
+all: protobuf generate build test
 
 build:
 	@echo "Building $(BINARY_NAME)..."
@@ -35,9 +35,20 @@ lint:
 	$(GOFMT) ./...
 	$(GOLINT) run ./...
 
+bench:
+	@echo "Running benchmarks..."
+	$(GOTEST) -bench=. -benchtime=2s github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
+
+coverage:
+	@echo "Generating coverage report..."
+	$(GOTEST) -coverprofile=coverage.out -covermode=atomic github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
+	$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated at coverage.html"
+
 clean:
 	@echo "Cleaning..."
 	@rm -rf $(BUILD_DIR)
+	@rm -f coverage.out coverage.html
 
 # Generate protobuf files
 protobuf:
@@ -60,3 +71,6 @@ deps:
 run:
 	@echo "Running $(BINARY_NAME)..."
 	$(BUILD_DIR)/$(BINARY_NAME) --config=config.yaml
+
+# Run full CI locally
+ci: deps build test lint bench
