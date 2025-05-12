@@ -6,7 +6,7 @@ set -e
 # Configuration 
 # UPDATE THESE VALUES
 export REGISTRY="ghcr.io"
-export ORG="your-org"  # Replace with your GitHub username or organization
+export ORG="deepaucksharma"  # GitHub username or organization
 export IMAGE_NAME="nrdot-reservoir"
 export VERSION="v0.1.0"
 export LICENSE_KEY="your_license_key_here"  # Replace with your actual New Relic license key

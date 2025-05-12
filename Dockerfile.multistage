@@ -1,0 +1,39 @@
+FROM golang:1.21 as builder
+
+# Clone NR-DOT repository
+RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /build && \
+    cd /build && \
+    git checkout -b feat/reservoir-sampler
+
+# Update manifest files
+COPY manifest.yaml.patch /tmp/
+RUN echo 'processors:\n  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.1.0' > /tmp/manifest.yaml.patch && \
+    cd /build && \
+    grep -n "processors:" distributions/nrdot-collector-k8s/manifest.yaml | head -1 | cut -d':' -f1 > /tmp/line_number && \
+    line=$(<'/tmp/line_number') && \
+    sed -i "${line}r /tmp/manifest.yaml.patch" distributions/nrdot-collector-k8s/manifest.yaml
+
+# Build the distribution
+WORKDIR /build
+RUN apt-get update && apt-get install -y make && \
+    make dist
+
+FROM alpine:3.19
+
+# Copy the collector binary from the builder
+COPY --from=builder /build/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
+
+# Create a non-root user to run the collector
+RUN addgroup -g 10001 otel && \
+    adduser -D -G otel -u 10001 otel
+
+# Set up directories for checkpoints and data
+RUN mkdir -p /var/otelpersist/badger && \
+    chown -R otel:otel /var/otelpersist
+
+USER otel
+
+ENTRYPOINT ["/otelcol-nrdot"]
+CMD ["--config=/etc/otelcol-nrdot/config.yaml"]
+
+EXPOSE 4317 4318 8888
