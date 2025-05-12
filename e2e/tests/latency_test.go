@@ -1,17 +1,5 @@
 package tests
 
-// LatencyResult holds statistics about latency measurements
-type LatencyResult struct {
-	Rate      int
-	Min       time.Duration
-	Max       time.Duration
-	Mean      time.Duration
-	P50       time.Duration
-	P90       time.Duration
-	P99       time.Duration
-	StdDev    time.Duration
-}
-
 import (
 	"context"
 	"fmt"
@@ -26,6 +14,18 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// LatencyResult holds statistics about latency measurements
+type LatencyResult struct {
+	Rate   int
+	Min    time.Duration
+	Max    time.Duration
+	Mean   time.Duration
+	P50    time.Duration
+	P90    time.Duration
+	P99    time.Duration
+	StdDev time.Duration
+}
+
 // LatencyTest tests the latency impact of the reservoir sampler under different loads
 func LatencyTest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -33,11 +33,11 @@ func LatencyTest(t *testing.T) {
 
 	// Load test configuration
 	config := e2e.DefaultTestConfig()
-	
+
 	// Override test configuration for latency test
 	config.ReservoirSize = 50000
 	config.WindowDuration = "1m"
-	
+
 	// Generate collector configuration file
 	configFile, err := config.GenerateConfigFile()
 	if err != nil {
@@ -64,30 +64,30 @@ func LatencyTest(t *testing.T) {
 	samplesPerRate := 1000 // Number of latency samples to collect for each rate
 
 	var results []LatencyResult
-	
+
 	// Create tracer for direct span generation
 	tracer, tp, err := framework.CreateTraceClient(ctx, "latency-test")
 	if err != nil {
 		t.Fatalf("Failed to create trace client: %v", err)
 	}
 	defer tp.Shutdown(ctx)
-	
+
 	// Test each rate
 	for _, rate := range rates {
 		log.Printf("Testing latency at rate: %d spans/second", rate)
-		
+
 		// Calculate time between spans to achieve the desired rate
 		sendInterval := time.Second / time.Duration(rate)
-		
+
 		// Collect latency samples
 		var latencies []time.Duration
-		
+
 		for i := 0; i < samplesPerRate; i++ {
 			startTime := time.Now()
-			
+
 			// Create and send a span
 			_, span := tracer.Start(
-				ctx, 
+				ctx,
 				fmt.Sprintf("test-span-%d-%d", rate, i),
 				trace.WithAttributes(
 					attribute.Int("test.rate", rate),
@@ -95,48 +95,49 @@ func LatencyTest(t *testing.T) {
 				),
 			)
 			span.End()
-			
+
 			// Measure latency
 			latency := time.Since(startTime)
 			latencies = append(latencies, latency)
-			
+
 			// Sleep to maintain rate
 			sleepTime := sendInterval - latency
 			if sleepTime > 0 {
 				time.Sleep(sleepTime)
 			}
-			
+
 			// Log progress periodically
 			if i%100 == 0 && i > 0 {
-				log.Printf("Rate %d spans/second: Collected %d/%d latency samples", 
+				log.Printf("Rate %d spans/second: Collected %d/%d latency samples",
 					rate, i, samplesPerRate)
 			}
 		}
-		
+
 		// Calculate latency statistics
 		latencyStats := calculateLatencyStats(latencies)
+		latencyStats.Rate = rate
 		results = append(results, latencyStats)
-		
+
 		log.Printf("Rate %d spans/second: Min=%s, Mean=%s, P99=%s, Max=%s",
 			rate, latencyStats.Min, latencyStats.Mean, latencyStats.P99, latencyStats.Max)
-		
+
 		// Allow the system to stabilize between tests
 		time.Sleep(5 * time.Second)
 	}
-	
+
 	// Print test results
 	fmt.Println("\nLatency Test Results:")
 	fmt.Println("====================")
 	fmt.Printf("Configuration: Reservoir size: %d, Window: %s\n",
 		config.ReservoirSize, config.WindowDuration)
 	fmt.Printf("Samples per rate: %d\n", samplesPerRate)
-	
+
 	fmt.Println("\nResults by Input Rate:")
 	fmt.Println("Rate (spans/s) | Min (ms) | P50 (ms) | P90 (ms) | P99 (ms) | Max (ms) | StdDev (ms)")
 	fmt.Println("-----------------------------------------------------------------------------")
 	for _, result := range results {
 		fmt.Printf("%-14d | %-8.2f | %-8.2f | %-8.2f | %-8.2f | %-8.2f | %-11.2f\n",
-			result.Rate, 
+			result.Rate,
 			float64(result.Min.Microseconds())/1000,
 			float64(result.P50.Microseconds())/1000,
 			float64(result.P90.Microseconds())/1000,
@@ -144,7 +145,7 @@ func LatencyTest(t *testing.T) {
 			float64(result.Max.Microseconds())/1000,
 			float64(result.StdDev.Microseconds())/1000)
 	}
-	
+
 	// Assert that P99 latency at highest rate is still reasonable (< 50ms)
 	highestRateResult := results[len(results)-1]
 	if highestRateResult.P99 > 50*time.Millisecond {
@@ -158,28 +159,28 @@ func calculateLatencyStats(latencies []time.Duration) LatencyResult {
 	if len(latencies) == 0 {
 		return LatencyResult{}
 	}
-	
+
 	// Sort latencies for percentile calculations
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
-	
+
 	// Calculate min and max
 	min := latencies[0]
 	max := latencies[len(latencies)-1]
-	
+
 	// Calculate mean
 	var sum time.Duration
 	for _, latency := range latencies {
 		sum += latency
 	}
 	mean := sum / time.Duration(len(latencies))
-	
+
 	// Calculate percentiles
 	p50 := latencies[len(latencies)*50/100]
 	p90 := latencies[len(latencies)*90/100]
 	p99 := latencies[len(latencies)*99/100]
-	
+
 	// Calculate standard deviation
 	var variance float64
 	for _, latency := range latencies {
@@ -188,13 +189,8 @@ func calculateLatencyStats(latencies []time.Duration) LatencyResult {
 	}
 	variance /= float64(len(latencies))
 	stdDev := time.Duration(math.Sqrt(variance))
-	
-	// Find the rate based on the highest latency
-	// This is a placeholder; in a real test, rate would be known
-	rate := 1000 // Default to lowest rate
-	
+
 	return LatencyResult{
-		Rate:   rate,
 		Min:    min,
 		Max:    max,
 		Mean:   mean,
