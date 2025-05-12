@@ -35,6 +35,8 @@ chmod +x nrdot/validate_deployment.sh
 - **`values.reservoir.yaml`**: NR-DOT-specific Helm values for deployment
 - **`distribution.yaml`**: Builder configuration for adding the reservoir sampler to NR-DOT
 - **`validate_deployment.sh`**: Script to verify successful deployment
+- **`TROUBLESHOOTING.md`**: Comprehensive troubleshooting guide
+- **`monitoring/`**: Dashboard and alert configuration guides
 
 ## Integration Process
 
@@ -115,7 +117,13 @@ kubectl exec -n observability $POD -- curl -s http://localhost:8888/metrics | gr
 kubectl exec -n observability $POD -- ls -l /var/otelpersist/ | grep reservoir.db
 ```
 
-## Key Metrics to Monitor
+## Monitoring
+
+For comprehensive monitoring recommendations, see:
+- [monitoring/DASHBOARD_GUIDE.md](./monitoring/DASHBOARD_GUIDE.md) - Dashboard setup guide
+- [monitoring/ALERTS_CONFIG.md](./monitoring/ALERTS_CONFIG.md) - Alert configuration
+
+Key metrics to monitor:
 
 - `pte_reservoir_traces_in_reservoir_count`: Current traces in reservoir
 - `pte_reservoir_checkpoint_age_seconds`: Time since last checkpoint
@@ -123,6 +131,67 @@ kubectl exec -n observability $POD -- ls -l /var/otelpersist/ | grep reservoir.d
 - `pte_reservoir_lru_evictions_total`: Trace buffer evictions (high = increase buffer)
 - `pte_reservoir_checkpoint_errors_total`: Failed checkpoints (should be 0)
 - `pte_reservoir_restore_success_total`: Successful restorations after restart
+
+## Troubleshooting
+
+For common issues and their solutions, refer to [TROUBLESHOOTING.md](./TROUBLESHOOTING.md), which covers:
+
+- Processor not found in components list
+- Checkpoint file not created
+- High memory usage
+- Excessive trace buffer evictions
+- Poor sampling distribution
+- Database size growing uncontrollably
+- Missing reservoir metrics
+
+## Advanced Topics
+
+### Upgrading NR-DOT
+
+When New Relic releases a new version of NR-DOT:
+
+1. Update your fork:
+   ```bash
+   git remote add upstream https://github.com/newrelic/opentelemetry-collector-releases.git
+   git fetch upstream
+   git checkout main
+   git merge upstream/main
+   git checkout feat/reservoir-sampler
+   git merge main
+   ```
+
+2. Resolve any conflicts in `distribution.yaml`
+
+3. Rebuild and push a new image with the updated version
+
+4. Update your Helm deployment with the new image tag
+
+### Performance Tuning
+
+For high-volume environments:
+
+```yaml
+processors:
+  reservoir_sampler:
+    size_k: 10000
+    window_duration: 30s
+    trace_buffer_max_size: 200000
+    trace_buffer_timeout: 5s
+    checkpoint_interval: 15s
+    db_compaction_schedule_cron: "0 */6 * * *"
+```
+
+For resource-constrained environments:
+
+```yaml
+processors:
+  reservoir_sampler:
+    size_k: 1000
+    window_duration: 120s
+    trace_buffer_max_size: 20000
+    trace_buffer_timeout: 20s
+    checkpoint_interval: 30s
+```
 
 ## References
 

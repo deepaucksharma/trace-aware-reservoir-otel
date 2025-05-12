@@ -48,6 +48,28 @@ export NEW_RELIC_LICENSE_KEY=your-license-key-here
 ./bin/pte-collector --config=config.yaml
 ```
 
+## NR-DOT Integration
+
+For integration with the New Relic Distribution of OpenTelemetry (NR-DOT), we provide a comprehensive set of resources in the `nrdot` directory:
+
+```bash
+# Navigate to NR-DOT integration directory
+cd nrdot
+
+# Run the build script to create a custom NR-DOT image
+chmod +x build_nrdot.sh
+./build_nrdot.sh
+
+# Deploy using Helm
+helm upgrade --install nr-otel newrelic/nrdot-collector \
+  --namespace observability \
+  --create-namespace \
+  --values values.reservoir.yaml \
+  --set licenseKey=YOUR_NEW_RELIC_LICENSE_KEY
+```
+
+For detailed instructions, see [NRDOT_INTEGRATION.md](nrdot/NRDOT_INTEGRATION.md).
+
 ## How It Works
 
 ### Reservoir Sampling
@@ -111,6 +133,36 @@ processors:
     db_compaction_target_size: 104857600  # 100MB
 ```
 
+## Performance Considerations
+
+The reservoir sampler is designed for high-throughput environments with the following performance characteristics:
+
+- **Memory Usage**: Proportional to reservoir size (k) and trace buffer size
+- **CPU Overhead**: Linear scaling with input volume, ~15-20% overhead for trace-aware mode
+- **Disk I/O**: Periodic writes during checkpointing, controlled by checkpoint_interval
+- **Scaling**: Handles 100K+ spans per second with proper configuration
+
+See [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) for detailed performance information and tuning guidelines.
+
+## Monitoring
+
+The processor exports several metrics to monitor its operation:
+
+- `reservoir_sampler.reservoir_size`: Current number of spans in the reservoir
+- `reservoir_sampler.window_count`: Total spans seen in the current window
+- `reservoir_sampler.trace_buffer_size`: Number of traces in the buffer
+- `reservoir_sampler.lru_evictions`: Number of trace evictions from the buffer
+- `reservoir_sampler.checkpoint_age`: Time since the last checkpoint
+
+For comprehensive monitoring recommendations, see:
+- [DASHBOARD_GUIDE.md](nrdot/monitoring/DASHBOARD_GUIDE.md) - Dashboard setup guide
+- [ALERTS_CONFIG.md](nrdot/monitoring/ALERTS_CONFIG.md) - Alert configuration
+
+## Troubleshooting
+
+For common issues and their solutions, refer to:
+- [TROUBLESHOOTING.md](nrdot/TROUBLESHOOTING.md) - Comprehensive troubleshooting guide
+
 ## Building and Running
 
 ### Prerequisites
@@ -133,37 +185,6 @@ make build
 make run
 ```
 
-## Performance Considerations
-
-The reservoir sampler is designed for high-throughput environments with the following performance characteristics:
-
-- **Memory Usage**: Proportional to reservoir size (k) and trace buffer size
-- **CPU Overhead**: Linear scaling with input volume, ~15-20% overhead for trace-aware mode
-- **Disk I/O**: Periodic writes during checkpointing, controlled by checkpoint_interval
-- **Scaling**: Handles 100K+ spans per second with proper configuration
-
-See [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) for detailed performance information and tuning guidelines.
-
-## Deployment
-
-### Standalone Collector
-
-Run the reservoir sampler as part of a standalone OpenTelemetry collector:
-
-```bash
-./bin/pte-collector --config=config.yaml
-```
-
-### Kubernetes
-
-Deploy using the provided Kubernetes manifests:
-
-```bash
-kubectl apply -f examples/kubernetes/deployment.yaml
-```
-
-See [examples/kubernetes/deployment.yaml](examples/kubernetes/deployment.yaml) for the complete configuration.
-
 ## Usage Example
 
 ```yaml
@@ -181,69 +202,13 @@ service:
       level: detailed
 ```
 
-## Integration with New Relic
-
-The example configuration includes an OTLP exporter configured for New Relic. To use it:
-
-1. Set your New Relic license key as an environment variable:
-   ```bash
-   export NEW_RELIC_LICENSE_KEY=your-license-key-here
-   ```
-
-2. The exporter is configured to send data to New Relic's OTLP endpoint:
-   ```yaml
-   otlphttp:
-     endpoint: "https://otlp.nr-data.net:4318"
-     headers:
-       api-key: ${NEW_RELIC_LICENSE_KEY}
-   ```
-
-## Monitoring
-
-The processor exports several metrics to monitor its operation:
-
-- `reservoir_sampler.reservoir_size`: Current number of spans in the reservoir
-- `reservoir_sampler.window_count`: Total spans seen in the current window
-- `reservoir_sampler.trace_buffer_size`: Number of traces in the buffer
-- `reservoir_sampler.lru_evictions`: Number of trace evictions from the buffer
-- `reservoir_sampler.checkpoint_age`: Time since the last checkpoint
-
-See [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) for a complete list of metrics and monitoring recommendations.
-
-## Extending the Collector
-
-This processor can be integrated into custom OpenTelemetry Collector distributions. To include it in your distribution:
-
-1. Add this repository as a dependency:
-   ```bash
-   go get github.com/deepaksharma/trace-aware-reservoir-otel
-   ```
-
-2. Import the processor in your collector's main.go:
-   ```go
-   import (
-     // Other imports
-     "github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler"
-   )
-
-   func main() {
-     factories, err := components.Components()
-     if err != nil {
-       // Handle error
-     }
-
-     // Add the reservoir sampler factory
-     factories.Processors[reservoirsampler.Type] = reservoirsampler.NewFactory()
-
-     // Continue with collector setup
-   }
-   ```
-
 ## Documentation
 
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) - Overall implementation plan
 - [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) - Detailed technical documentation
-- [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md) - Implementation plan and roadmap
-- [examples/config-examples.yaml](examples/config-examples.yaml) - Example configurations for different scenarios
+- [NRDOT_INTEGRATION.md](nrdot/NRDOT_INTEGRATION.md) - NR-DOT integration guide
+- [TROUBLESHOOTING.md](nrdot/TROUBLESHOOTING.md) - Troubleshooting guide
+- [examples/config-examples.yaml](examples/config-examples.yaml) - Example configurations
 
 ## Testing
 
