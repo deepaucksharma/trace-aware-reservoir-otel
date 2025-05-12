@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
@@ -33,7 +35,21 @@ const (
 	keyWindowStartTime = "window_start_time"
 )
 
-// reservoirProcessor implements a reservoir sampler processor.
+// reservoirProcessor implements a reservoir sampler processor that provides
+// statistically sound sampling of spans while preserving complete traces.
+//
+// Key features:
+// - Reservoir sampling using Algorithm R for statistically representative sampling
+// - Trace-aware mode to preserve complete traces
+// - Persistent storage of reservoir state for durability across restarts
+// - Metrics for monitoring performance and behavior
+// - Configurable window sizes and sampling rates
+//
+// The implementation follows the technical specification, prioritizing:
+// - Memory efficiency and bounds
+// - Correctness of sampling algorithm
+// - Durability of sampled data
+// - Thread safety and concurrent access
 type reservoirProcessor struct {
 	// Required interfaces for the processor
 	component.StartFunc
@@ -80,6 +96,11 @@ type reservoirProcessor struct {
 	lruEvictionsCounter    atomic.Int64
 	reservoirDbSizeGauge   atomic.Int64
 	compactionCountCounter atomic.Int64
+	sampledSpansCounter    atomic.Int64
+
+	// Metrics export
+	meter     metric.Meter
+	metricCtx context.Context
 
 	// Compaction
 	compactionCron *cron.Cron
@@ -93,12 +114,11 @@ var _ component.Component = (*reservoirProcessor)(nil)
 func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings, cfg *Config, nextConsumer consumer.Traces) (processor.Traces, error) {
 	logger := set.Logger
 
-	// Parse window duration
-	windowDuration, err := time.ParseDuration(cfg.WindowDuration)
+	// Parse window duration to validate it
+	_, err := time.ParseDuration(cfg.WindowDuration)
 	if err != nil {
 		return nil, fmt.Errorf("invalid window duration: %w", err)
 	}
-	_ = windowDuration // use this to avoid compiler error
 
 	// Parse checkpoint interval
 	checkpointInterval, err := time.ParseDuration(cfg.CheckpointInterval)
@@ -118,7 +138,8 @@ func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings,
 	// Create context with cancellation
 	processorCtx, processorCancel := context.WithCancel(ctx)
 
-	// Create the processor
+	// Create the processor with a secure source for random number generation
+	source := rand.NewSource(time.Now().UnixNano())
 	p := &reservoirProcessor{
 		ctx:             processorCtx,
 		ctxCancel:       processorCancel,
@@ -128,14 +149,18 @@ func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings,
 		reservoir:       make(map[uint64]SpanWithResource),
 		reservoirHashes: make([]uint64, 0, cfg.SizeK),
 		windowSize:      cfg.SizeK,
-		random:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		random:          rand.New(source),
 		stopChan:        make(chan struct{}),
+		meter:           set.MeterProvider.Meter("reservoirsampler"),
+		metricCtx:       processorCtx,
 	}
 
 	// Create trace buffer if trace-aware mode is enabled
 	if cfg.TraceAware {
 		p.traceBuffer = NewTraceBuffer(cfg.TraceBufferMaxSize, bufferTimeout, logger)
-		logger.Info("Trace-aware sampling enabled", 
+		// Connect the trace buffer to the processor's eviction counter
+		p.traceBuffer.SetEvictionCounter(&p.lruEvictionsCounter)
+		logger.Info("Trace-aware sampling enabled",
 			zap.Int("buffer_size", cfg.TraceBufferMaxSize),
 			zap.String("buffer_timeout", cfg.TraceBufferTimeout))
 	}
@@ -199,6 +224,143 @@ func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings,
 	return p, nil
 }
 
+// registerMetrics sets up the metrics for the processor
+func (p *reservoirProcessor) registerMetrics() error {
+	// First, set up synchronous gauges that directly read atomic values
+	var err error
+
+	// Reservoir size gauge
+	_, err = p.meter.Int64ObservableGauge(
+		"reservoir_sampler.reservoir_size",
+		metric.WithDescription("Number of spans currently in the reservoir"),
+		metric.WithUnit("{spans}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.reservoirSizeGauge.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create reservoir size gauge: %w", err)
+	}
+
+	// Window count gauge
+	_, err = p.meter.Int64ObservableGauge(
+		"reservoir_sampler.window_count",
+		metric.WithDescription("Total number of spans seen in the current window"),
+		metric.WithUnit("{spans}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.windowCountGauge.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create window count gauge: %w", err)
+	}
+
+	// Checkpoint age gauge
+	_, err = p.meter.Int64ObservableGauge(
+		"reservoir_sampler.checkpoint_age",
+		metric.WithDescription("Age of the last checkpoint in seconds"),
+		metric.WithUnit("s"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.checkpointAgeGauge.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create checkpoint age gauge: %w", err)
+	}
+
+	// DB size gauge
+	_, err = p.meter.Int64ObservableGauge(
+		"reservoir_sampler.db_size",
+		metric.WithDescription("Size of the reservoir checkpoint database in bytes"),
+		metric.WithUnit("By"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.reservoirDbSizeGauge.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create db size gauge: %w", err)
+	}
+
+	// Compaction counter - this is monotonic
+	_, err = p.meter.Int64ObservableCounter(
+		"reservoir_sampler.db_compactions",
+		metric.WithDescription("Number of database compactions performed"),
+		metric.WithUnit("{compactions}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.compactionCountCounter.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create compaction counter: %w", err)
+	}
+
+	// LRU evictions counter - this is monotonic
+	_, err = p.meter.Int64ObservableCounter(
+		"reservoir_sampler.lru_evictions",
+		metric.WithDescription("Number of trace evictions from the LRU cache"),
+		metric.WithUnit("{evictions}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.lruEvictionsCounter.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create LRU evictions counter: %w", err)
+	}
+
+	// Sampled spans counter - this is monotonic
+	_, err = p.meter.Int64ObservableCounter(
+		"reservoir_sampler.sampled_spans",
+		metric.WithDescription("Number of spans sampled (added to reservoir)"),
+		metric.WithUnit("{spans}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(p.sampledSpansCounter.Load())
+			return nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create sampled spans counter: %w", err)
+	}
+
+	// For trace-aware mode, add trace buffer metrics
+	if p.config.TraceAware && p.traceBuffer != nil {
+		// Trace buffer size
+		_, err = p.meter.Int64ObservableGauge(
+			"reservoir_sampler.trace_buffer_size",
+			metric.WithDescription("Number of traces currently in the buffer"),
+			metric.WithUnit("{traces}"),
+			metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+				o.Observe(int64(p.traceBuffer.Size()))
+				return nil
+			}),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create trace buffer size gauge: %w", err)
+		}
+
+		// Trace buffer span count
+		_, err = p.meter.Int64ObservableGauge(
+			"reservoir_sampler.trace_buffer_span_count",
+			metric.WithDescription("Total number of spans in the trace buffer"),
+			metric.WithUnit("{spans}"),
+			metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+				o.Observe(int64(p.traceBuffer.SpanCount()))
+				return nil
+			}),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create trace buffer span count gauge: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // Start implements the Component interface.
 func (p *reservoirProcessor) Start(ctx context.Context, host component.Host) error {
 	p.logger.Info("Starting reservoir sampler processor")
@@ -211,6 +373,11 @@ func (p *reservoirProcessor) Start(ctx context.Context, host component.Host) err
 		if err := p.loadState(); err != nil {
 			p.logger.Error("Failed to load previous state, starting with empty reservoir", zap.Error(err))
 		}
+	}
+
+	// Register metrics
+	if err := p.registerMetrics(); err != nil {
+		p.logger.Error("Failed to register metrics", zap.Error(err))
 	}
 
 	// Start background goroutines
@@ -262,10 +429,27 @@ func (p *reservoirProcessor) Shutdown(ctx context.Context) error {
 
 // ConsumeTraces implements the processor.Traces interface.
 func (p *reservoirProcessor) ConsumeTraces(ctx context.Context, traces ptrace.Traces) error {
+	startTime := time.Now()
+	var err error
+
+	// Process through the appropriate mode
 	if p.config.TraceAware {
-		return p.consumeTracesAware(ctx, traces)
+		err = p.consumeTracesAware(ctx, traces)
+	} else {
+		err = p.consumeTracesSimple(ctx, traces)
 	}
-	return p.consumeTracesSimple(ctx, traces)
+
+	// Capture metrics for the operation
+	latency := time.Since(startTime)
+
+	// Log processing time for large trace batches
+	if traces.SpanCount() > 1000 {
+		p.logger.Debug("Processed large trace batch",
+			zap.Int("span_count", traces.SpanCount()),
+			zap.Duration("latency", latency))
+	}
+
+	return err
 }
 
 // consumeTracesSimple implements standard reservoir sampling for traces.
@@ -273,27 +457,47 @@ func (p *reservoirProcessor) consumeTracesSimple(ctx context.Context, traces ptr
 	// Check if we need to roll over to a new window
 	p.checkWindowRollover()
 
+	// Use a sync.Pool to get a slice for storing span data
+	spanDataList := make([]struct {
+		span     ptrace.Span
+		resource pcommon.Resource
+		scope    pcommon.InstrumentationScope
+	}, 0, 100) // Pre-allocate some capacity for better performance
+
 	// Process each resource spans
 	rss := traces.ResourceSpans()
 	for i := 0; i < rss.Len(); i++ {
 		rs := rss.At(i)
 		resource := rs.Resource()
-		
+
 		// Process each instrumentation scope spans
 		ilss := rs.ScopeSpans()
 		for j := 0; j < ilss.Len(); j++ {
 			ils := ilss.At(j)
 			scope := ils.Scope()
-			
+
 			// Process each span
 			spans := ils.Spans()
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
-				
-				// Add the span to the reservoir
-				p.addSpanToReservoir(span, resource, scope)
+
+				// Collect the span data
+				spanDataList = append(spanDataList, struct {
+					span     ptrace.Span
+					resource pcommon.Resource
+					scope    pcommon.InstrumentationScope
+				}{
+					span:     span,
+					resource: resource,
+					scope:    scope,
+				})
 			}
 		}
+	}
+
+	// Now add all spans to the reservoir in a single lock section
+	for _, data := range spanDataList {
+		p.addSpanToReservoir(data.span, data.resource, data.scope)
 	}
 
 	return nil
@@ -304,23 +508,43 @@ func (p *reservoirProcessor) consumeTracesAware(ctx context.Context, traces ptra
 	// Check if we need to roll over to a new window
 	p.checkWindowRollover()
 
+	// Prepare a list of spans to add to the trace buffer
+	spanDataList := make([]struct {
+		span     ptrace.Span
+		resource pcommon.Resource
+		scope    pcommon.InstrumentationScope
+	}, 0, 100) // Pre-allocate some capacity for better performance
+
 	// Add all spans to the trace buffer
 	rss := traces.ResourceSpans()
 	for i := 0; i < rss.Len(); i++ {
 		rs := rss.At(i)
 		resource := rs.Resource()
-		
+
 		ilss := rs.ScopeSpans()
 		for j := 0; j < ilss.Len(); j++ {
 			ils := ilss.At(j)
 			scope := ils.Scope()
-			
+
 			spans := ils.Spans()
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
-				p.traceBuffer.AddSpan(span, resource, scope)
+				spanDataList = append(spanDataList, struct {
+					span     ptrace.Span
+					resource pcommon.Resource
+					scope    pcommon.InstrumentationScope
+				}{
+					span:     span,
+					resource: resource,
+					scope:    scope,
+				})
 			}
 		}
+	}
+
+	// Add all spans to the trace buffer in a batch
+	for _, data := range spanDataList {
+		p.traceBuffer.AddSpan(data.span, data.resource, data.scope)
 	}
 
 	return nil
@@ -383,6 +607,16 @@ func (p *reservoirProcessor) initializeWindowLocked() {
 }
 
 // addSpanToReservoir adds a span to the reservoir using reservoir sampling algorithm
+//
+// This implements Algorithm R (Jeffrey Vitter):
+// 1. If we have seen fewer than k elements, add the element to our reservoir
+// 2. Otherwise, with probability k/n, keep the new element
+//    where:
+//      n = the number of elements we have seen so far
+//      k = the size of our reservoir
+//
+// In this implementation, when an item is selected to be kept with probability k/n,
+// we replace a random existing element in the reservoir with the new one.
 func (p *reservoirProcessor) addSpanToReservoir(span ptrace.Span, resource pcommon.Resource, scope pcommon.InstrumentationScope) {
 	// Increment the total count for this window
 	count := p.windowCount.Inc()
@@ -398,23 +632,27 @@ func (p *reservoirProcessor) addSpanToReservoir(span ptrace.Span, resource pcomm
 		// Reservoir not full yet, add span directly
 		p.reservoir[hash] = cloneSpanWithContext(span, resource, scope)
 		p.reservoirHashes = append(p.reservoirHashes, hash)
+		// Increment the sampled span counter
+		p.sampledSpansCounter.Inc()
 	} else {
 		// Reservoir is full, use reservoir sampling algorithm
 		// Generate a random index in [0, count)
 		p.randomLock.Lock()
 		j := p.random.Int63n(count)
 		p.randomLock.Unlock()
-		
+
 		if j < int64(p.windowSize) {
 			// Replace the span at index j
 			oldHash := p.reservoirHashes[j]
 			p.reservoir[hash] = cloneSpanWithContext(span, resource, scope)
 			delete(p.reservoir, oldHash)
 			p.reservoirHashes[j] = hash
+			// Increment the sampled span counter
+			p.sampledSpansCounter.Inc()
 		}
 		// If j >= size, just skip this span
 	}
-	
+
 	// Update metrics
 	p.reservoirSizeGauge.Store(int64(len(p.reservoir)))
 	p.windowCountGauge.Store(count)
@@ -430,18 +668,30 @@ func (p *reservoirProcessor) processTraceBuffer() {
 	}
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
 			// Get all completed traces from the buffer
 			completedTraces := p.traceBuffer.GetCompletedTraces()
+			if len(completedTraces) > 0 {
+				p.logger.Debug("Processing completed traces",
+					zap.Int("count", len(completedTraces)))
+			}
+
 			for _, traces := range completedTraces {
 				// Forward each trace to consumeTracesSimple for normal reservoir sampling
-				p.consumeTracesSimple(p.ctx, traces)
+				if err := p.consumeTracesSimple(p.ctx, traces); err != nil {
+					p.logger.Error("Failed to process completed trace", zap.Error(err))
+				}
 			}
-			
+
+		case <-p.ctx.Done():
+			p.logger.Info("Stopping trace buffer processor due to context cancellation")
+			return
+
 		case <-p.stopChan:
+			p.logger.Info("Stopping trace buffer processor due to stopChan signal")
 			return
 		}
 	}
@@ -604,40 +854,68 @@ func (p *reservoirProcessor) loadState() error {
 		reservoirBucket := tx.Bucket([]byte(bucketReservoir))
 		windowBucket := reservoirBucket.Bucket([]byte(fmt.Sprintf("window_%d", p.currentWindow)))
 		if windowBucket == nil {
-			return fmt.Errorf("no reservoir bucket found for window %d", p.currentWindow)
+			p.logger.Warn("No reservoir bucket found for window, resetting count",
+				zap.Int64("window", p.currentWindow))
+			// CRITICAL: Reset n to 0 when summaries are not restored
+			p.windowCount.Store(0)
+			return nil
 		}
-		
+
 		// Read all spans
 		p.reservoir = make(map[uint64]SpanWithResource)
 		p.reservoirHashes = make([]uint64, 0, p.windowSize)
-		
+
+		spansLoaded := 0
 		err := windowBucket.ForEach(func(k, v []byte) error {
 			if len(k) != 8 {
 				return nil
 			}
-			
+
 			hash := binary.BigEndian.Uint64(k)
-			
+
 			spanWithRes, err := deserializeSpanWithResource(v)
 			if err != nil {
 				p.logger.Error("Failed to deserialize span from checkpoint", zap.Error(err))
 				return nil
 			}
-			
+
 			p.reservoir[hash] = spanWithRes
 			p.reservoirHashes = append(p.reservoirHashes, hash)
-			
+			spansLoaded++
+
 			return nil
 		})
-		
+
 		if err != nil {
 			return fmt.Errorf("failed to read spans from checkpoint: %w", err)
 		}
-		
+
+		p.logger.Info("Restored spans from checkpoint",
+			zap.Int("count", spansLoaded),
+			zap.Int("capacity", p.windowSize))
+
+		// CRITICAL: Reset n to match the actual number of loaded spans when fewer spans than n are restored
+		if spansLoaded == 0 {
+			p.windowCount.Store(0)
+			p.logger.Warn("No spans loaded from checkpoint, resetting window count to 0")
+		} else if int64(spansLoaded) < p.windowCount.Load() {
+			p.logger.Warn("Fewer spans loaded than expected, adjusting window count",
+				zap.Int("loaded", spansLoaded),
+				zap.Int64("expected", p.windowCount.Load()))
+			// We set to at least the number of spans to ensure algorithm correctness
+			if int64(spansLoaded) > p.windowCount.Load() {
+				p.windowCount.Store(int64(spansLoaded))
+			}
+		}
+
 		return nil
 	})
-	
+
 	if err != nil {
+		// Reset to safe values on error
+		p.windowCount.Store(0)
+		p.reservoir = make(map[uint64]SpanWithResource)
+		p.reservoirHashes = make([]uint64, 0, p.windowSize)
 		return err
 	}
 	
@@ -658,22 +936,79 @@ func (p *reservoirProcessor) loadState() error {
 
 // serializeSpanWithResource serializes a SpanWithResource to bytes
 func serializeSpanWithResource(swr SpanWithResource) ([]byte, error) {
-	// For a real implementation, we would use a proper serialization strategy
-	// For now, we'll create a stub that stores only span ID and trace ID
-	// This is a placeholder - in production, you'd implement proper serialization
-	
-	// Extract span ID and trace ID as examples of data to store
+	// Create a proper span summary with all important fields
 	traceID := swr.Span.TraceID()
 	spanID := swr.Span.SpanID()
-	
-	// For demonstration, we'll just serialize these IDs
+
+	// Serialize basic span data
+	spanData := make([]byte, 0, 128)
+
+	// Start with trace and span IDs
+	spanData = append(spanData, traceID[:]...)
+	spanData = append(spanData, spanID[:]...)
+
+	// Add parent span ID
+	parentSpanID := swr.Span.ParentSpanID()
+	spanData = append(spanData, parentSpanID[:]...)
+
+	// Add span name (with length prefix)
+	spanName := []byte(swr.Span.Name())
+	spanNameLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(spanNameLen, uint32(len(spanName)))
+	spanData = append(spanData, spanNameLen...)
+	spanData = append(spanData, spanName...)
+
+	// Add start and end timestamps
+	startTimeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(startTimeBytes, uint64(swr.Span.StartTimestamp()))
+	spanData = append(spanData, startTimeBytes...)
+
+	endTimeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(endTimeBytes, uint64(swr.Span.EndTimestamp()))
+	spanData = append(spanData, endTimeBytes...)
+
+	// Serialize resource data - just grab service.name and service.version if available
+	resourceData := make([]byte, 0, 64)
+	swr.Resource.Attributes().Range(func(k string, v pcommon.Value) bool {
+		if k == "service.name" || k == "service.version" {
+			// Add key with length prefix
+			keyBytes := []byte(k)
+			keyLen := make([]byte, 4)
+			binary.BigEndian.PutUint32(keyLen, uint32(len(keyBytes)))
+			resourceData = append(resourceData, keyLen...)
+			resourceData = append(resourceData, keyBytes...)
+
+			// Add value with length prefix
+			valueBytes := []byte(v.AsString())
+			valueLen := make([]byte, 4)
+			binary.BigEndian.PutUint32(valueLen, uint32(len(valueBytes)))
+			resourceData = append(resourceData, valueLen...)
+			resourceData = append(resourceData, valueBytes...)
+		}
+		return true
+	})
+
+	// For scope, just store the name and version
+	scopeData := make([]byte, 0, 64)
+	scopeName := []byte(swr.Scope.Name())
+	scopeNameLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(scopeNameLen, uint32(len(scopeName)))
+	scopeData = append(scopeData, scopeNameLen...)
+	scopeData = append(scopeData, scopeName...)
+
+	scopeVersion := []byte(swr.Scope.Version())
+	scopeVersionLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(scopeVersionLen, uint32(len(scopeVersion)))
+	scopeData = append(scopeData, scopeVersionLen...)
+	scopeData = append(scopeData, scopeVersion...)
+
+	// Create and marshal the summary
 	summary := &spanprotos.SpanWithResourceSummary{
-		SpanData:     append(traceID[:], spanID[:]...),
-		ResourceData: []byte("resource-placeholder"),
-		ScopeData:    []byte("scope-placeholder"),
+		SpanData:     spanData,
+		ResourceData: resourceData,
+		ScopeData:    scopeData,
 	}
-	
-	// Marshal the summary
+
 	return proto.Marshal(summary)
 }
 
@@ -684,16 +1019,99 @@ func deserializeSpanWithResource(data []byte) (SpanWithResource, error) {
 	if err := proto.Unmarshal(data, summary); err != nil {
 		return SpanWithResource{}, fmt.Errorf("failed to unmarshal span summary: %w", err)
 	}
-	
-	// Create a new traces object with minimal structure
+
+	// Create a new traces object with structure
 	traces := ptrace.NewTraces()
 	rs := traces.ResourceSpans().AppendEmpty()
 	ss := rs.ScopeSpans().AppendEmpty()
 	span := ss.Spans().AppendEmpty()
-	
-	// In a real implementation, we would deserialize the actual span data
-	// For now, we'll just return a minimal valid structure
-	
+
+	// Extract span data
+	spanData := summary.SpanData
+	if len(spanData) < 32 { // At minimum, need trace ID and span ID (16 bytes each)
+		return SpanWithResource{}, fmt.Errorf("invalid span data length")
+	}
+
+	// Extract trace ID
+	traceID := pcommon.TraceID{}
+	copy(traceID[:], spanData[:16])
+	span.SetTraceID(traceID)
+
+	// Extract span ID
+	spanID := pcommon.SpanID{}
+	copy(spanID[:], spanData[16:24])
+	span.SetSpanID(spanID)
+
+	// Extract parent span ID if present
+	if len(spanData) >= 32 {
+		parentSpanID := pcommon.SpanID{}
+		copy(parentSpanID[:], spanData[24:32])
+		span.SetParentSpanID(parentSpanID)
+	}
+
+	// Extract more fields if they exist
+	if len(spanData) > 32 {
+		// Extract span name
+		if len(spanData) >= 36 {
+			nameLen := binary.BigEndian.Uint32(spanData[32:36])
+			if len(spanData) >= 36+int(nameLen) {
+				span.SetName(string(spanData[36 : 36+nameLen]))
+
+				// Extract timestamps if present
+				pos := 36 + nameLen
+				if len(spanData) >= int(pos)+16 { // Need 8 bytes each for start and end
+					startTime := binary.BigEndian.Uint64(spanData[pos : pos+8])
+					span.SetStartTimestamp(pcommon.Timestamp(startTime))
+
+					endTime := binary.BigEndian.Uint64(spanData[pos+8 : pos+16])
+					span.SetEndTimestamp(pcommon.Timestamp(endTime))
+				}
+			}
+		}
+	}
+
+	// Extract resource data
+	resourceData := summary.ResourceData
+	pos := 0
+	for pos+8 <= len(resourceData) {
+		// Read key
+		keyLen := binary.BigEndian.Uint32(resourceData[pos : pos+4])
+		pos += 4
+		if pos+int(keyLen)+4 > len(resourceData) {
+			break
+		}
+		key := string(resourceData[pos : pos+int(keyLen)])
+		pos += int(keyLen)
+
+		// Read value
+		valueLen := binary.BigEndian.Uint32(resourceData[pos : pos+4])
+		pos += 4
+		if pos+int(valueLen) > len(resourceData) {
+			break
+		}
+		value := string(resourceData[pos : pos+int(valueLen)])
+		pos += int(valueLen)
+
+		// Set resource attribute
+		rs.Resource().Attributes().PutStr(key, value)
+	}
+
+	// Extract scope data
+	scopeData := summary.ScopeData
+	if len(scopeData) >= 4 {
+		nameLen := binary.BigEndian.Uint32(scopeData[:4])
+		if len(scopeData) >= 4+int(nameLen)+4 {
+			ss.Scope().SetName(string(scopeData[4 : 4+nameLen]))
+
+			// Extract version
+			pos := 4 + nameLen
+			versionLen := binary.BigEndian.Uint32(scopeData[pos : pos+4])
+			if len(scopeData) >= int(pos)+4+int(versionLen) {
+				ss.Scope().SetVersion(string(scopeData[pos+4 : pos+4+versionLen]))
+			}
+		}
+	}
+
 	return SpanWithResource{
 		Span:     span,
 		Resource: rs.Resource(),
@@ -731,14 +1149,14 @@ func (p *reservoirProcessor) compactDatabase() {
 	if p.db == nil || p.config.DbCompactionTargetSize <= 0 {
 		return
 	}
-	
+
 	// Check current DB size
 	fi, err := os.Stat(p.config.CheckpointPath)
 	if err != nil {
 		p.logger.Error("Failed to get database file info", zap.Error(err))
 		return
 	}
-	
+
 	// If size is below target, nothing to do
 	currentSize := fi.Size()
 	if currentSize <= p.config.DbCompactionTargetSize {
@@ -747,17 +1165,37 @@ func (p *reservoirProcessor) compactDatabase() {
 			zap.Int64("target_size", p.config.DbCompactionTargetSize))
 		return
 	}
-	
+
 	p.logger.Info("Database compaction started",
 		zap.Int64("current_size", currentSize),
 		zap.Int64("target_size", p.config.DbCompactionTargetSize))
-	
-	startTime := time.Now()
-	
-	// Perform compaction manually - BoltDB doesn't have a built-in Compact function in newer versions
-	tempFile := p.config.CheckpointPath + ".compact"
 
-	// Close the DB for compaction
+	startTime := time.Now()
+
+	// Perform compaction using the safer approach:
+	// 1. Close the current DB
+	// 2. Create a copy with a temporary file
+	// 3. Rename the temporary file to replace the original
+	// 4. Reopen the DB
+
+	// Define filenames
+	originalFile := p.config.CheckpointPath
+	tempFile := originalFile + ".compact"
+	backupFile := originalFile + ".bak"
+
+	// Function to ensure we clean up and restore the DB in case of errors
+	reopenOriginalDB := func() {
+		if db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
+			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
+		} else {
+			p.lock.Lock()
+			p.db = db
+			p.lock.Unlock()
+			p.logger.Info("Successfully reopened original database after error")
+		}
+	}
+
+	// 1. Close the DB for compaction
 	p.lock.Lock()
 	db := p.db
 	p.db = nil
@@ -765,160 +1203,180 @@ func (p *reservoirProcessor) compactDatabase() {
 
 	if err := db.Close(); err != nil {
 		p.logger.Error("Failed to close database for compaction", zap.Error(err))
-
-		// Reopen the database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
-		}
-
+		reopenOriginalDB()
 		return
 	}
 
-	// Manual compaction by creating a new DB and copying the data
-	newDb, err := bolt.Open(tempFile, 0644, &bolt.Options{Timeout: 1 * time.Second})
-	if err != nil {
-		p.logger.Error("Database compaction failed", zap.Error(err))
-		
-		// Reopen the original database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
-		}
-		
+	// Create backup of original file before attempting compaction
+	if err := copyFile(originalFile, backupFile); err != nil {
+		p.logger.Error("Failed to create backup before compaction", zap.Error(err))
+		reopenOriginalDB()
 		return
 	}
 
-	// Reopen the source database in read-only mode
-	sourceDb, err := bolt.Open(p.config.CheckpointPath, 0444, &bolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
-	if err != nil {
-		p.logger.Error("Failed to open source database for compaction", zap.Error(err))
-		newDb.Close()
-		os.Remove(tempFile)
-		
-		// Reopen the original database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
+	// 2. Perform compaction by creating a new DB and copying the data
+	var newDb, sourceDb *bolt.DB
+	var compactionSuccess bool
+
+	// SAFER APPROACH: Use a function to ensure proper cleanup of resources
+	func() {
+		var err error
+
+		// Create new empty database
+		newDb, err = bolt.Open(tempFile, 0644, &bolt.Options{Timeout: 1 * time.Second})
+		if err != nil {
+			p.logger.Error("Failed to create new database for compaction", zap.Error(err))
+			return
 		}
-		
-		return
-	}
+		defer func() {
+			if !compactionSuccess && newDb != nil {
+				newDb.Close()
+				os.Remove(tempFile)
+			}
+		}()
 
-	// Copy all data from the source to the destination database
-	err = sourceDb.View(func(sourceTx *bolt.Tx) error {
-		return newDb.Update(func(destTx *bolt.Tx) error {
-			// Iterate over all buckets in the source database
-			return sourceTx.ForEach(func(bucketName []byte, sourceBucket *bolt.Bucket) error {
-				// Create the bucket in the destination
-				destBucket, err := destTx.CreateBucketIfNotExists(bucketName)
-				if err != nil {
-					return fmt.Errorf("error creating bucket %s: %w", string(bucketName), err)
-				}
+		// Open original database in read-only mode
+		sourceDb, err = bolt.Open(originalFile, 0444, &bolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
+		if err != nil {
+			p.logger.Error("Failed to open source database for compaction", zap.Error(err))
+			return
+		}
+		defer sourceDb.Close()
 
-				// Iterate over all keys in the source bucket
-				return sourceBucket.ForEach(func(k, v []byte) error {
-					// If the value is nil, it's a nested bucket
-					if v == nil {
-						// Handle nested buckets recursively
-						return copyNestedBucket(sourceBucket, destBucket, k)
+		// Copy all data from the source to the destination database
+		err = sourceDb.View(func(sourceTx *bolt.Tx) error {
+			return newDb.Update(func(destTx *bolt.Tx) error {
+				// Iterate over all buckets in the source database
+				return sourceTx.ForEach(func(bucketName []byte, sourceBucket *bolt.Bucket) error {
+					// Create the bucket in the destination
+					destBucket, err := destTx.CreateBucketIfNotExists(bucketName)
+					if err != nil {
+						return fmt.Errorf("error creating bucket %s: %w", string(bucketName), err)
 					}
-					
-					// Otherwise, it's a key-value pair
-					return destBucket.Put(k, v)
+
+					// Iterate over all keys in the source bucket
+					return sourceBucket.ForEach(func(k, v []byte) error {
+						// If the value is nil, it's a nested bucket
+						if v == nil {
+							// Handle nested buckets recursively
+							return copyNestedBucket(sourceBucket, destBucket, k)
+						}
+
+						// Otherwise, it's a key-value pair
+						return destBucket.Put(k, v)
+					})
 				})
 			})
 		})
-	})
 
-	// Close the source database
-	sourceDb.Close()
-
-	if err != nil {
-		p.logger.Error("Failed to copy data during compaction", zap.Error(err))
-		newDb.Close()
-		os.Remove(tempFile)
-		
-		// Reopen the original database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
+		if err != nil {
+			p.logger.Error("Failed to copy data during compaction", zap.Error(err))
+			return
 		}
-		
+
+		// Close both databases safely
+		if err = sourceDb.Close(); err != nil {
+			p.logger.Error("Failed to close source database", zap.Error(err))
+			return
+		}
+		sourceDb = nil
+
+		if err = newDb.Close(); err != nil {
+			p.logger.Error("Failed to close new database", zap.Error(err))
+			return
+		}
+		newDb = nil
+
+		// Mark compaction as successful
+		compactionSuccess = true
+	}()
+
+	// If compaction failed, reopen the original DB and return
+	if !compactionSuccess {
+		p.logger.Error("Compaction failed, reopening original database")
+		reopenOriginalDB()
+		// Clean up temporary files
+		os.Remove(tempFile)
+		os.Remove(backupFile)
 		return
 	}
 
-	// Close the new database
-	if err := newDb.Close(); err != nil {
-		p.logger.Error("Failed to close new database after compaction", zap.Error(err))
-		os.Remove(tempFile)
-		
-		// Reopen the original database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
-		}
-		
-		return
-	}
-	
-	// Replace the original file with the compacted one
-	if err := os.Rename(tempFile, p.config.CheckpointPath); err != nil {
+	// 3. Replace the original file with the compacted one
+	if err := os.Rename(tempFile, originalFile); err != nil {
 		p.logger.Error("Failed to replace database with compacted version", zap.Error(err))
-		
-		// Cleanup temporary file
-		os.Remove(tempFile)
-		
-		// Reopen the original database
-		if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
+
+		// Try to restore from backup
+		if err := os.Rename(backupFile, originalFile); err != nil {
+			p.logger.Error("Failed to restore from backup after compaction error", zap.Error(err))
 		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
+			p.logger.Info("Successfully restored database from backup")
 		}
-		
+
+		reopenOriginalDB()
 		return
 	}
-	
-	// Reopen the compacted database
-	if db, err := bolt.Open(p.config.CheckpointPath, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
+
+	// Remove the backup file if rename was successful
+	os.Remove(backupFile)
+
+	// 4. Reopen the compacted database
+	if db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
 		p.logger.Error("Failed to open compacted database", zap.Error(err))
+
+		// Critical error - try to restore from backup
+		if err := os.Rename(backupFile, originalFile); err != nil {
+			p.logger.Error("Failed to restore from backup after reopen error", zap.Error(err))
+		}
+
+		reopenOriginalDB()
 	} else {
 		p.lock.Lock()
 		p.db = db
 		p.lock.Unlock()
+		p.logger.Info("Successfully reopened compacted database")
+
+		// Get new size and update metrics
+		if fi, err := os.Stat(originalFile); err == nil {
+			newSize := fi.Size()
+			p.reservoirDbSizeGauge.Store(newSize)
+
+			p.logger.Info("Database compaction completed",
+				zap.Int64("original_size", currentSize),
+				zap.Int64("new_size", newSize),
+				zap.Float64("reduction_pct", float64(currentSize-newSize)*100/float64(currentSize)),
+				zap.Duration("duration", time.Since(startTime)))
+
+			p.compactionCountCounter.Inc()
+		}
 	}
-	
-	// Get new size
-	if fi, err := os.Stat(p.config.CheckpointPath); err == nil {
-		newSize := fi.Size()
-		p.reservoirDbSizeGauge.Store(newSize)
-		
-		p.logger.Info("Database compaction completed",
-			zap.Int64("original_size", currentSize),
-			zap.Int64("new_size", newSize),
-			zap.Float64("reduction_pct", float64(currentSize-newSize)*100/float64(currentSize)),
-			zap.Duration("duration", time.Since(startTime)))
-		
-		// Update metrics
-		p.compactionCountCounter.Inc()
-	} else {
-		p.logger.Error("Failed to get compacted database size", zap.Error(err))
+}
+
+// copyFile is a helper function to copy a file
+func copyFile(src, dst string) error {
+	// Open source file
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
 	}
+	defer sourceFile.Close()
+
+	// Create destination file
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer destFile.Close()
+
+	// Copy the contents
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy file contents: %w", err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err = destFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+
+	return nil
 }

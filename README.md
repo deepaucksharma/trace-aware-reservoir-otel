@@ -78,6 +78,9 @@ make build
 
 ```bash
 ./bin/pte-collector --config=config.yaml
+
+# Or use the Makefile to run:
+make run
 ```
 
 ## Usage Example
@@ -89,8 +92,82 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, reservoir_sampler]
-      exporters: [otlphttp/backend]
+      exporters: [debug, otlphttp]
+
+  # Optional telemetry settings
+  telemetry:
+    metrics:
+      level: detailed
 ```
+
+## Integration with New Relic
+
+The example configuration includes an OTLP exporter configured for New Relic. To use it:
+
+1. Set your New Relic license key as an environment variable:
+   ```bash
+   export NEW_RELIC_LICENSE_KEY=your-license-key-here
+   ```
+
+2. The exporter is configured to send data to New Relic's OTLP endpoint:
+   ```yaml
+   otlphttp:
+     endpoint: "https://otlp.nr-data.net:4318"
+     headers:
+       api-key: ${NEW_RELIC_LICENSE_KEY}
+   ```
+
+## Extending the Collector
+
+This processor can be integrated into custom OpenTelemetry Collector distributions. To include it in your distribution:
+
+1. Add this repository as a dependency:
+   ```bash
+   go get github.com/deepaksharma/trace-aware-reservoir-otel
+   ```
+
+2. Import the processor in your collector's main.go:
+   ```go
+   import (
+     // Other imports
+     "github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler"
+   )
+
+   func main() {
+     factories, err := components.Components()
+     if err != nil {
+       // Handle error
+     }
+
+     // Add the reservoir sampler factory
+     factories.Processors[reservoirsampler.Type] = reservoirsampler.NewFactory()
+
+     // Continue with collector setup
+   }
+   ```
+
+## Testing
+
+Run the unit tests:
+```bash
+make test
+```
+
+Run end-to-end tests:
+```bash
+cd e2e
+go test ./tests -v
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 

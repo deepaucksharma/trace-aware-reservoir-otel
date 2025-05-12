@@ -6,6 +6,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +27,9 @@ type TraceBuffer struct {
 	// Logger for debug and error output
 	logger *zap.Logger
 
+	// Counter for trace evictions (optional)
+	evictionCounter *atomic.Int64
+
 	// Mutex for thread safety
 	mu sync.RWMutex
 }
@@ -38,7 +42,13 @@ func NewTraceBuffer(maxTraces int, timeout time.Duration, logger *zap.Logger) *T
 		maxTraces:   maxTraces,
 		timeout:     timeout,
 		logger:      logger,
+		evictionCounter: nil, // Set externally if needed
 	}
+}
+
+// SetEvictionCounter sets the counter for trace evictions
+func (tb *TraceBuffer) SetEvictionCounter(counter *atomic.Int64) {
+	tb.evictionCounter = counter
 }
 
 // AddSpan adds a span to the trace buffer
@@ -165,6 +175,25 @@ func (tb *TraceBuffer) evictOldestTrace() {
 
 	// Remove the oldest trace
 	if !first {
+		// Count how many spans were in the trace
+		evictedSpans := 0
+		if spans, ok := tb.traces[oldestTraceID]; ok {
+			evictedSpans = len(spans)
+		}
+
+		// Log the eviction
+		tb.logger.Debug("Evicting trace from buffer due to capacity limit",
+			zap.Stringer("trace_id", oldestTraceID),
+			zap.Time("last_updated", oldestTime),
+			zap.Int("spans", evictedSpans),
+			zap.Duration("age", time.Since(oldestTime)))
+
+		// Increment the eviction counter if set
+		if tb.evictionCounter != nil {
+			tb.evictionCounter.Inc()
+		}
+
+		// Remove the trace
 		delete(tb.traces, oldestTraceID)
 		delete(tb.lastUpdated, oldestTraceID)
 	}
