@@ -187,7 +187,9 @@ func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings,
 			}
 			return nil
 		}); err != nil {
-			db.Close()
+			if closeErr := db.Close(); closeErr != nil {
+				logger.Error("Failed to close database after initialization error", zap.Error(closeErr))
+			}
 			return nil, fmt.Errorf("failed to initialize checkpoint database: %w", err)
 		}
 
@@ -419,7 +421,9 @@ func (p *reservoirProcessor) Shutdown(ctx context.Context) error {
 		if err := p.checkpoint(); err != nil {
 			p.logger.Error("Failed to perform final checkpoint", zap.Error(err))
 		}
-		p.db.Close()
+		if closeErr := p.db.Close(); closeErr != nil {
+			p.logger.Error("Failed to close database during shutdown", zap.Error(closeErr))
+		}
 	}
 
 	return nil
@@ -713,10 +717,18 @@ func (p *reservoirProcessor) checkpointLocked() error {
 	// Create state objects to serialize
 	// Use manual serialization for the state instead of protobuf to avoid stack issues
 	stateBuffer := &bytes.Buffer{}
-	binary.Write(stateBuffer, binary.BigEndian, p.currentWindow)
-	binary.Write(stateBuffer, binary.BigEndian, p.windowStartTime.Unix())
-	binary.Write(stateBuffer, binary.BigEndian, p.windowEndTime.Unix())
-	binary.Write(stateBuffer, binary.BigEndian, p.windowCount.Load())
+	if err := binary.Write(stateBuffer, binary.BigEndian, p.currentWindow); err != nil {
+		return fmt.Errorf("failed to write current window: %w", err)
+	}
+	if err := binary.Write(stateBuffer, binary.BigEndian, p.windowStartTime.Unix()); err != nil {
+		return fmt.Errorf("failed to write window start time: %w", err)
+	}
+	if err := binary.Write(stateBuffer, binary.BigEndian, p.windowEndTime.Unix()); err != nil {
+		return fmt.Errorf("failed to write window end time: %w", err)
+	}
+	if err := binary.Write(stateBuffer, binary.BigEndian, p.windowCount.Load()); err != nil {
+		return fmt.Errorf("failed to write window count: %w", err)
+	}
 	stateBytes := stateBuffer.Bytes()
 
 	// Save the state first in its own transaction
@@ -935,7 +947,6 @@ func (p *reservoirProcessor) loadState() error {
 	p.reservoirHashes = make([]uint64, 0, p.windowSize)
 
 	// Process spans in manageable chunks to avoid stack issues
-	const batchSize = 10
 	spansLoaded := 0
 
 	err = p.db.View(func(tx *bolt.Tx) error {
@@ -1083,15 +1094,18 @@ func (p *reservoirProcessor) compactDatabase() {
 	tempFile := originalFile + ".tmp"
 
 	// Create a function to reopen the original DB in case of errors
-	reopenOriginalDB := func() {
-		if db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
+	reopenOriginalDB := func() error {
+		db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second})
+		if err != nil {
 			p.logger.Error("Failed to reopen original database after error", zap.Error(err))
-		} else {
-			p.lock.Lock()
-			p.db = db
-			p.lock.Unlock()
-			p.logger.Info("Successfully reopened original database after error")
+			return fmt.Errorf("failed to reopen original database: %w", err)
 		}
+
+		p.lock.Lock()
+		p.db = db
+		p.lock.Unlock()
+		p.logger.Info("Successfully reopened original database after error")
+		return nil
 	}
 
 	// 1. Create a backup of the original file
@@ -1109,15 +1123,21 @@ func (p *reservoirProcessor) compactDatabase() {
 		defer func() {
 			// Close both databases safely if they're still open
 			if sourceDb != nil {
-				sourceDb.Close()
+				if err := sourceDb.Close(); err != nil {
+					p.logger.Error("Failed to close source database", zap.Error(err))
+				}
 			}
 			if newDb != nil {
-				newDb.Close()
+				if err := newDb.Close(); err != nil {
+					p.logger.Error("Failed to close new database", zap.Error(err))
+				}
 			}
 
 			if !compactionSuccess {
 				// Clean up temporary file if compaction failed
-				os.Remove(tempFile)
+				if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+					p.logger.Error("Failed to remove temporary file", zap.Error(err), zap.String("file", tempFile))
+				}
 			}
 		}()
 
@@ -1186,10 +1206,16 @@ func (p *reservoirProcessor) compactDatabase() {
 	// If compaction failed, reopen the original DB and return
 	if !compactionSuccess {
 		p.logger.Error("Compaction failed, reopening original database")
-		reopenOriginalDB()
+		if err := reopenOriginalDB(); err != nil {
+			p.logger.Error("Failed to reopen original database", zap.Error(err))
+		}
 		// Clean up temporary files
-		os.Remove(tempFile)
-		os.Remove(backupFile)
+		if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+			p.logger.Error("Failed to remove temporary file", zap.Error(err), zap.String("file", tempFile))
+		}
+		if err := os.Remove(backupFile); err != nil && !os.IsNotExist(err) {
+			p.logger.Error("Failed to remove backup file", zap.Error(err), zap.String("file", backupFile))
+		}
 		return
 	}
 
@@ -1204,12 +1230,16 @@ func (p *reservoirProcessor) compactDatabase() {
 			p.logger.Info("Successfully restored database from backup")
 		}
 
-		reopenOriginalDB()
+		if err := reopenOriginalDB(); err != nil {
+			p.logger.Error("Failed to reopen original database", zap.Error(err))
+		}
 		return
 	}
 
 	// Remove the backup file if rename was successful
-	os.Remove(backupFile)
+	if err := os.Remove(backupFile); err != nil && !os.IsNotExist(err) {
+		p.logger.Error("Failed to remove backup file after successful compaction", zap.Error(err), zap.String("file", backupFile))
+	}
 
 	// 4. Reopen the compacted database
 	if db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
@@ -1220,7 +1250,9 @@ func (p *reservoirProcessor) compactDatabase() {
 			p.logger.Error("Failed to restore from backup after reopen error", zap.Error(err))
 		}
 
-		reopenOriginalDB()
+		if err := reopenOriginalDB(); err != nil {
+			p.logger.Error("Failed to reopen original database", zap.Error(err))
+		}
 	} else {
 		p.lock.Lock()
 		p.db = db
@@ -1250,14 +1282,22 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open source file: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() {
+		if closeErr := sourceFile.Close(); closeErr != nil {
+			err = fmt.Errorf("failed to close source file: %w", closeErr)
+		}
+	}()
 
 	// Create destination file
 	destFile, err := os.Create(dst)
 	if err != nil {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
-	defer destFile.Close()
+	defer func() {
+		if closeErr := destFile.Close(); closeErr != nil {
+			err = fmt.Errorf("failed to close destination file: %w", closeErr)
+		}
+	}()
 
 	// Copy the contents
 	_, err = io.Copy(destFile, sourceFile)

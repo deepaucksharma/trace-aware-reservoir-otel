@@ -25,12 +25,28 @@ func createSpanKey(span ptrace.Span) SpanKey {
 func hashSpanKey(key SpanKey) uint64 {
 	// Combine trace ID and span ID into a single hash
 	h := xxhash.New()
-	h.Write(key.TraceID[:])
-	h.Write(key.SpanID[:])
+
+	// These writes to a hash never fail in xxhash implementation
+	// but we should follow best practices and check the error in case
+	// the implementation changes in the future
+	if _, err := h.Write(key.TraceID[:]); err != nil {
+		// In the extremely unlikely case of an error, just return a simple hash of the first bytes
+		result := uint64(key.TraceID[0]) << 56
+		result |= uint64(key.SpanID[0])
+		return result
+	}
+	if _, err := h.Write(key.SpanID[:]); err != nil {
+		// If we can't write the span ID, use what we have so far
+		return h.Sum64()
+	}
+
 	return h.Sum64()
 }
 
 // isRootSpan determines if a span is a root span (has no parent)
+// This function is currently not used but is kept for potential future use
+// in trace-aware sampling where root spans may need special handling.
+//nolint:unused // Kept for future use
 func isRootSpan(span ptrace.Span) bool {
 	return span.ParentSpanID().IsEmpty()
 }
@@ -74,7 +90,6 @@ func insertSpanIntoTraces(traces ptrace.Traces, swr SpanWithResource) {
 	var matchingRS ptrace.ResourceSpans
 	var matchingSS ptrace.ScopeSpans
 	foundResource := false
-	foundScope := false
 
 	// Look for a matching resource
 	for i := 0; i < resourceSpans.Len(); i++ {
@@ -88,23 +103,32 @@ func insertSpanIntoTraces(traces ptrace.Traces, swr SpanWithResource) {
 
 			// Look for a matching scope within this resource
 			scopeSpans := rs.ScopeSpans()
-			for j := 0; j < scopeSpans.Len(); j++ {
-				ss := scopeSpans.At(j)
+			scopeFound := false
 
-				// TODO: Implement proper scope matching
-				// For now, just append to a new scope span
-				if !foundScope {
-					matchingSS = ss
-					foundScope = true
-					break
+			// Try to find a matching scope if there are scopes
+			if scopeSpans.Len() > 0 {
+				// Look for scope with matching name
+				targetName := swr.Scope.Name()
+				for i := 0; i < scopeSpans.Len(); i++ {
+					ss := scopeSpans.At(i)
+					if ss.Scope().Name() == targetName {
+						matchingSS = ss
+						scopeFound = true
+						break
+					}
+				}
+
+				// If no match found but scopes exist, use the first one
+				if !scopeFound {
+					matchingSS = scopeSpans.At(0)
+					scopeFound = true
 				}
 			}
 
-			if !foundScope {
+			if !scopeFound {
 				// No matching scope found, create a new one
 				matchingSS = rs.ScopeSpans().AppendEmpty()
 				swr.Scope.CopyTo(matchingSS.Scope())
-				foundScope = true
 			}
 
 			break

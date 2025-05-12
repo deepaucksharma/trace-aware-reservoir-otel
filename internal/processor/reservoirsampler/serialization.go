@@ -81,57 +81,103 @@ func serializeSpanWithResource(swr SpanWithResource) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, bufSize))
 
 	// Write header
-	buf.WriteString(SerializationMagic) // Magic bytes
-	buf.WriteByte(SerializationVersion) // Version
+	if _, err := buf.WriteString(SerializationMagic); err != nil {
+		return nil, fmt.Errorf("failed to write magic bytes: %w", err)
+	}
+	if err := buf.WriteByte(SerializationVersion); err != nil {
+		return nil, fmt.Errorf("failed to write version: %w", err)
+	}
 
 	// Write section flags (1 byte each)
 	// 1 = section present, 0 = section absent
-	buf.WriteByte(1) // Span section (always present)
+	if err := buf.WriteByte(1); err != nil { // Span section (always present)
+		return nil, fmt.Errorf("failed to write span section flag: %w", err)
+	}
 	if resourceSectionSize > 0 {
-		buf.WriteByte(1)
+		if err := buf.WriteByte(1); err != nil {
+			return nil, fmt.Errorf("failed to write resource section flag: %w", err)
+		}
 	} else {
-		buf.WriteByte(0)
+		if err := buf.WriteByte(0); err != nil {
+			return nil, fmt.Errorf("failed to write resource section flag: %w", err)
+		}
 	}
 	if scopeSectionSize > 0 {
-		buf.WriteByte(1)
+		if err := buf.WriteByte(1); err != nil {
+			return nil, fmt.Errorf("failed to write scope section flag: %w", err)
+		}
 	} else {
-		buf.WriteByte(0)
+		if err := buf.WriteByte(0); err != nil {
+			return nil, fmt.Errorf("failed to write scope section flag: %w", err)
+		}
 	}
 
 	// Write section sizes
-	binary.Write(buf, binary.BigEndian, uint32(spanSectionSize))
-	binary.Write(buf, binary.BigEndian, uint32(resourceSectionSize))
-	binary.Write(buf, binary.BigEndian, uint32(scopeSectionSize))
+	if err := binary.Write(buf, binary.BigEndian, uint32(spanSectionSize)); err != nil {
+		return nil, fmt.Errorf("failed to write span section size: %w", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint32(resourceSectionSize)); err != nil {
+		return nil, fmt.Errorf("failed to write resource section size: %w", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint32(scopeSectionSize)); err != nil {
+		return nil, fmt.Errorf("failed to write scope section size: %w", err)
+	}
 
 	// Write span data
-	buf.Write(traceID[:])
-	buf.Write(spanID[:])
-	buf.Write(parentSpanID[:])
+	if _, err := buf.Write(traceID[:]); err != nil {
+		return nil, fmt.Errorf("failed to write trace ID: %w", err)
+	}
+	if _, err := buf.Write(spanID[:]); err != nil {
+		return nil, fmt.Errorf("failed to write span ID: %w", err)
+	}
+	if _, err := buf.Write(parentSpanID[:]); err != nil {
+		return nil, fmt.Errorf("failed to write parent span ID: %w", err)
+	}
 
 	// Write span name with length prefix
-	binary.Write(buf, binary.BigEndian, uint32(len(name)))
-	buf.WriteString(name)
+	if err := binary.Write(buf, binary.BigEndian, uint32(len(name))); err != nil {
+		return nil, fmt.Errorf("failed to write name length: %w", err)
+	}
+	if _, err := buf.WriteString(name); err != nil {
+		return nil, fmt.Errorf("failed to write name: %w", err)
+	}
 
 	// Write timestamps
-	binary.Write(buf, binary.BigEndian, uint64(startTime))
-	binary.Write(buf, binary.BigEndian, uint64(endTime))
+	if err := binary.Write(buf, binary.BigEndian, uint64(startTime)); err != nil {
+		return nil, fmt.Errorf("failed to write start timestamp: %w", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint64(endTime)); err != nil {
+		return nil, fmt.Errorf("failed to write end timestamp: %w", err)
+	}
 
 	// Write resource data if present
 	if resourceSectionSize > 0 {
 		// Write service name key
 		key := "service.name"
-		binary.Write(buf, binary.BigEndian, uint32(len(key)))
-		buf.WriteString(key)
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(key))); err != nil {
+			return nil, fmt.Errorf("failed to write service name key length: %w", err)
+		}
+		if _, err := buf.WriteString(key); err != nil {
+			return nil, fmt.Errorf("failed to write service name key: %w", err)
+		}
 
 		// Write service name value
-		binary.Write(buf, binary.BigEndian, uint32(len(serviceName)))
-		buf.WriteString(serviceName)
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(serviceName))); err != nil {
+			return nil, fmt.Errorf("failed to write service name value length: %w", err)
+		}
+		if _, err := buf.WriteString(serviceName); err != nil {
+			return nil, fmt.Errorf("failed to write service name value: %w", err)
+		}
 	}
 
 	// Write scope data if present
 	if scopeSectionSize > 0 {
-		binary.Write(buf, binary.BigEndian, uint32(len(scopeName)))
-		buf.WriteString(scopeName)
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(scopeName))); err != nil {
+			return nil, fmt.Errorf("failed to write scope name length: %w", err)
+		}
+		if _, err := buf.WriteString(scopeName); err != nil {
+			return nil, fmt.Errorf("failed to write scope name: %w", err)
+		}
 	}
 
 	return buf.Bytes(), nil

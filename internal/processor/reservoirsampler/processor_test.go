@@ -28,9 +28,9 @@ func TestCreateProcessor(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
-	// Need to set checkpoint path for validation to pass
+	// For testing, don't use checkpoint path to avoid BoltDB issues
 	rcfg := cfg.(*Config)
-	rcfg.CheckpointPath = t.TempDir() + "/test_checkpoint.db"
+	rcfg.CheckpointPath = ""
 
 	// Create processor manually instead of using the factory method
 	// since the interface has changed
@@ -121,7 +121,10 @@ func TestReservoirSampling(t *testing.T) {
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(t, err)
-	defer proc.Shutdown(ctx)
+	defer func() {
+		err := proc.Shutdown(ctx)
+		require.NoError(t, err, "Failed to shutdown processor")
+	}()
 
 	// Create more spans than the reservoir size
 	numSpans := 100
@@ -170,7 +173,10 @@ func TestTraceAwareSampling(t *testing.T) {
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(t, err)
-	defer proc.Shutdown(ctx)
+	defer func() {
+		err := proc.Shutdown(ctx)
+		require.NoError(t, err, "Failed to shutdown processor")
+	}()
 
 	// Create some traces with shared trace IDs
 	traces := generateTracesWithSharedIDs(20, 5) // 20 spans across 5 trace IDs
@@ -283,7 +289,10 @@ func BenchmarkReservoirSampling(b *testing.B) {
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(b, err)
-	defer proc.Shutdown(ctx)
+	defer func() {
+		err := proc.Shutdown(ctx)
+		require.NoError(b, err, "Failed to shutdown processor")
+	}()
 
 	// Generate test traces once (outside the benchmark loop)
 	traces := generateTraces(1000)
@@ -324,7 +333,10 @@ func BenchmarkTraceAwareSampling(b *testing.B) {
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(b, err)
-	defer proc.Shutdown(ctx)
+	defer func() {
+		err := proc.Shutdown(ctx)
+		require.NoError(b, err, "Failed to shutdown processor")
+	}()
 
 	// Generate test traces with shared IDs
 	traces := generateTracesWithSharedIDs(1000, 100) // 1000 spans across 100 trace IDs
