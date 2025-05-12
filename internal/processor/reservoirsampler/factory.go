@@ -69,21 +69,21 @@ func ForceReservoirExport(p processor.Traces) {
 
 		// Log the window rollover
 		rp.logger.Info("Forced window rollover for testing")
-		
+
 		// Export the current reservoir contents to the next consumer
 		if len(rp.reservoir) > 0 {
 			// Create a new traces object to hold all spans
 			exportTraces := ptrace.NewTraces()
-			
+
 			// Add all spans from the reservoir to the traces
 			for _, spanWithRes := range rp.reservoir {
 				insertSpanIntoTraces(exportTraces, spanWithRes)
 			}
-			
+
 			// Export the traces to the next consumer
-			rp.logger.Info("Exporting reservoir contents for testing", 
+			rp.logger.Info("Exporting reservoir contents for testing",
 				zap.Int("span_count", exportTraces.SpanCount()))
-			
+
 			// Use a separate goroutine to avoid deadlocks since we're holding the lock
 			go func(traces ptrace.Traces) {
 				if err := rp.nextConsumer.ConsumeTraces(rp.ctx, traces); err != nil {

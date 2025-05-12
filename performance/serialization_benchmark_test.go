@@ -14,7 +14,7 @@ import (
 // BenchmarkSerialization benchmarks the serialization of spans
 func BenchmarkSerialization(b *testing.B) {
 	b.Skip("Serialization benchmark not implemented yet")
-	
+
 	// This is a placeholder for future implementation
 	// The actual benchmark will test serialization performance
 	// with different data sizes and configurations
@@ -26,18 +26,18 @@ func createTestSpanWithResource() reservoirsampler.SpanWithResource {
 	rs := traces.ResourceSpans().AppendEmpty()
 	res := rs.Resource()
 	res.Attributes().PutStr("service.name", "benchmark-service")
-	
+
 	ss := rs.ScopeSpans().AppendEmpty()
 	scope := ss.Scope()
 	scope.SetName("benchmark-scope")
-	
+
 	span := ss.Spans().AppendEmpty()
 	span.SetName("benchmark-span")
 	span.SetTraceID(createTestTraceID(1))
 	span.SetSpanID(createTestSpanID(1))
 	span.SetStartTimestamp(123456789)
 	span.SetEndTimestamp(987654321)
-	
+
 	return reservoirsampler.SpanWithResource{
 		Span:     span,
 		Resource: res,
