@@ -1,4 +1,4 @@
-module github.com/deepakshrma/trace-aware-reservoir-otel
+module github.com/deepaucksharma/trace-aware-reservoir-otel
 
 go 1.21
 

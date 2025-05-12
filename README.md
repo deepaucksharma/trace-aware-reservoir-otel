@@ -7,45 +7,33 @@ A trace-aware reservoir sampling implementation for OpenTelemetry collector. Thi
 This repository contains two main components:
 
 - **Processor Implementation**: An OpenTelemetry processor implementing trace-aware reservoir sampling in Go
-- **Kubernetes Setup**: Manifests for deploying the processor with OpenTelemetry on Kubernetes (using Kind)
+- **NR-DOT Integration**: Deployment with New Relic OpenTelemetry Distribution (NR-DOT)
 
 ## Getting Started
 
-### Configuration
+### New Relic NR-DOT Integration
 
-This project uses environment variables for all configuration. Simply copy `.env.example` to `.env` and customize:
-
-```bash
-cp .env.example .env
-# Edit .env with your settings
-```
-
-See [Environment Configuration Guide](ENV-CONFIG.md) for all available options.
-
-### Processor Usage
-
-The reservoir sampler processor can be integrated into any OpenTelemetry collector pipeline. See [integration guide](docs/integration-guide.md) for detailed instructions.
-
-### Local Development with Kind
-
-For local testing and development, use the Kind automation scripts in the `kind/` directory:
+The deployment method uses the New Relic OpenTelemetry Distribution (NR-DOT) with Helm:
 
 ```bash
-# Create a Kind cluster with Kubernetes
-./kind/setup-kind.sh
-# Deploy the monitoring stack
-./kind/deploy-monitoring.sh
-# When done, clean up
-./kind/cleanup.sh
+# See detailed instructions in the integration guide
+helm install otel-reservoir newrelic/nri-bundle -f values.reservoir.yaml
 ```
 
-### Kubernetes Deployment
-
-Production-ready Kubernetes manifests are available in the `k8s/` directory.
+See [NR-DOT Integration Guide](NRDOT-INTEGRATION.md) for detailed instructions.
 
 ## Architecture
 
 The trace-aware reservoir sampling processor maintains a statistically representative sample of traces while prioritizing those of greater importance. It uses windowed reservoirs and configurable trace selection strategies.
+
+Key features:
+
+- Reservoir sampling using Algorithm R for statistically representative sampling
+- Trace-aware mode to preserve complete traces
+- Persistent storage of reservoir state for durability across restarts
+- Metrics for monitoring performance and behavior
+- Configurable window sizes and sampling rates
+- Badger v3 database for efficient persistence
 
 ## License
 

@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: monitoring-suite
-  labels:
-    name: monitoring-suite
-    app.kubernetes.io/name: monitoring-suite
-    app.kubernetes.io/part-of: trace-aware-reservoir-otel
