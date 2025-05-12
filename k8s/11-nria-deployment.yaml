@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .NRIA_DEPLOYMENT_NAME }}
+  namespace: {{ .NAMESPACE }}
+  labels:
+    app: nria-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nria-monitor
+  template:
+    metadata:
+      labels:
+        app: nria-monitor
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: newrelic-infra
+        image: newrelic/infrastructure:latest
+        env:
+        - name: NRIA_LICENSE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: newrelic-secrets
+              key: license-key
+        # Mount the config file
+        volumeMounts:
+        - name: nria-config-vol
+          mountPath: /etc/newrelic-infra.yml
+          subPath: newrelic-infra.yml
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: rootfs
+          mountPath: /host/root
+          readOnly: true
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+          readOnly: true
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        securityContext:
+          privileged: true # Required for full host access
+
+      volumes:
+      - name: nria-config-vol
+        configMap:
+          name: nria-config
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: rootfs
+        hostPath:
+          path: /
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+      - name: varlog
+        hostPath:
+          path: /var/log

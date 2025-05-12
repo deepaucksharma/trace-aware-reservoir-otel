@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-processor-config
+  namespace: {{ .NAMESPACE }}
+data:
+  config.yaml: |
+    receivers:
+      hostmetrics:
+        collection_interval: {{ .OTEL_METRICS_COLLECTION_INTERVAL }}
+        scrapers:
+          cpu:
+          memory:
+          disk:
+          filesystem:
+          network:
+          load:
+        root_path: /rootfs
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      resourcedetection:
+        detectors: [env, system]
+        override: true
+      resource:
+        attributes:
+          - key: host.name
+            value: "${HOSTNAME}_{{ .OTEL_PROCESSOR_DISPLAY_NAME_SUFFIX }}"
+            action: upsert
+          - key: service.name
+            value: "{{ .OTEL_SERVICE_NAME }}"
+            action: upsert
+          - key: monitoring.setup
+            value: "nrdot_custom_plus"
+            action: upsert
+          - key: vm.base.hostname
+            value: "${HOSTNAME}"
+            action: upsert
+      batch:
+        timeout: 10s
+      # Common metrics transformation
+      transform/common_metrics:
+        metric_statements:
+          - context: metric
+            statements:
+              - set(name, "host.cpu.utilization") where name == "system.cpu.utilization"
+              - set(name, "host.memory.utilization") where name == "system.memory.utilization"
+              - set(name, "host.disk.io.bytes") where name == "system.disk.io"
+              - set(name, "host.filesystem.utilization") where name == "system.filesystem.utilization"
+      # Custom processor for traces
+      reservoir_sampler:
+        size_k: {{ .RESERVOIR_SIZE_K }}
+        window_duration: {{ .WINDOW_DURATION }}
+        trace_aware: {{ .TRACE_AWARE }}
+        trace_buffer_max_size: {{ .TRACE_BUFFER_MAX_SIZE }}
+        trace_buffer_timeout: {{ .TRACE_BUFFER_TIMEOUT }}
+        checkpoint_path: {{ .CHECKPOINT_PATH }}
+        checkpoint_interval: {{ .CHECKPOINT_INTERVAL }}
+
+    exporters:
+      otlphttp/newrelic:
+        endpoint: {{ .NR_ENDPOINT }}
+        headers:
+          api-key: ${NRIA_LICENSE_KEY}
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [hostmetrics]
+          processors: [resourcedetection, resource, transform/common_metrics, batch]
+          exporters: [otlphttp/newrelic]
+        traces:
+          receivers: [otlp]
+          processors: [resourcedetection, resource, reservoir_sampler, batch]
+          exporters: [otlphttp/newrelic]

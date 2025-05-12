@@ -1,6 +1,7 @@
 package reservoirsampler
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -8,19 +9,18 @@ import (
 )
 
 // Config defines configuration for the reservoir sampler processor.
-// It includes settings for sampling window size, persistence, and trace-aware sampling.
 type Config struct {
 	// SizeK is the max number of spans to store in the reservoir
 	SizeK int `mapstructure:"size_k"`
 
 	// WindowDuration is the duration of each sampling window
-	WindowDuration string `mapstructure:"window_duration"`
+	WindowDuration time.Duration `mapstructure:"window_duration"`
 
 	// CheckpointPath is the file path to use for reservoir checkpoints
 	CheckpointPath string `mapstructure:"checkpoint_path"`
 
 	// CheckpointInterval is how often to checkpoint the reservoir state to disk
-	CheckpointInterval string `mapstructure:"checkpoint_interval"`
+	CheckpointInterval time.Duration `mapstructure:"checkpoint_interval"`
 
 	// TraceAware determines whether to use trace-aware sampling
 	TraceAware bool `mapstructure:"trace_aware"`
@@ -29,15 +29,16 @@ type Config struct {
 	TraceBufferMaxSize int `mapstructure:"trace_buffer_max_size"`
 
 	// TraceBufferTimeout is how long to wait for a trace to complete
-	TraceBufferTimeout string `mapstructure:"trace_buffer_timeout"`
+	TraceBufferTimeout time.Duration `mapstructure:"trace_buffer_timeout"`
 
-	// DbCompactionScheduleCron is the cron schedule for BoltDB compaction
+	// DbCompactionScheduleCron is the cron schedule for DB compaction
 	DbCompactionScheduleCron string `mapstructure:"db_compaction_schedule_cron"`
 
 	// DbCompactionTargetSize is the target size in bytes for the database
 	DbCompactionTargetSize int64 `mapstructure:"db_compaction_target_size"`
 }
 
+// Ensure Config implements component.Config
 var _ component.Config = (*Config)(nil)
 
 // Validate checks if the processor configuration is valid
@@ -46,16 +47,7 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("size_k must be greater than 0, got %d", cfg.SizeK)
 	}
 
-	if cfg.WindowDuration == "" {
-		return fmt.Errorf("window_duration must be specified")
-	}
-
-	windowDuration, err := time.ParseDuration(cfg.WindowDuration)
-	if err != nil {
-		return fmt.Errorf("invalid window_duration format: %w", err)
-	}
-
-	if windowDuration <= 0 {
+	if cfg.WindowDuration <= 0 {
 		return fmt.Errorf("window_duration must be positive, got %s", cfg.WindowDuration)
 	}
 
@@ -63,16 +55,7 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("checkpoint_path must be specified")
 	}
 
-	if cfg.CheckpointInterval == "" {
-		return fmt.Errorf("checkpoint_interval must be specified")
-	}
-
-	checkpointInterval, err := time.ParseDuration(cfg.CheckpointInterval)
-	if err != nil {
-		return fmt.Errorf("invalid checkpoint_interval format: %w", err)
-	}
-
-	if checkpointInterval <= 0 {
+	if cfg.CheckpointInterval <= 0 {
 		return fmt.Errorf("checkpoint_interval must be positive, got %s", cfg.CheckpointInterval)
 	}
 
@@ -81,20 +64,75 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("trace_buffer_max_size must be greater than 0 when trace_aware is true, got %d", cfg.TraceBufferMaxSize)
 		}
 
-		if cfg.TraceBufferTimeout == "" {
-			return fmt.Errorf("trace_buffer_timeout must be specified when trace_aware is true")
-		}
-
-		bufferTimeout, err := time.ParseDuration(cfg.TraceBufferTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid trace_buffer_timeout format: %w", err)
-		}
-
-		if bufferTimeout <= 0 {
-			return fmt.Errorf("trace_buffer_timeout must be positive, got %s", cfg.TraceBufferTimeout)
+		if cfg.TraceBufferTimeout <= 0 {
+			return fmt.Errorf("trace_buffer_timeout must be positive when trace_aware is true, got %s", cfg.TraceBufferTimeout)
 		}
 	}
 
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler to properly serialize time.Duration fields
+func (cfg *Config) MarshalJSON() ([]byte, error) {
+	type Alias Config
+	
+	// Create a struct with string fields for durations
+	aux := struct {
+		WindowDuration     string `json:"window_duration"`
+		CheckpointInterval string `json:"checkpoint_interval"`
+		TraceBufferTimeout string `json:"trace_buffer_timeout"`
+		*Alias
+	}{
+		WindowDuration:     cfg.WindowDuration.String(),
+		CheckpointInterval: cfg.CheckpointInterval.String(),
+		TraceBufferTimeout: cfg.TraceBufferTimeout.String(),
+		Alias:              (*Alias)(cfg),
+	}
+	
+	return json.Marshal(aux)
+}
+
+// UnmarshalJSON implements json.Unmarshaler to properly deserialize time.Duration fields
+func (cfg *Config) UnmarshalJSON(data []byte) error {
+	type Alias Config
+	
+	// Create a struct with string fields for durations
+	aux := struct {
+		WindowDuration     string `json:"window_duration"`
+		CheckpointInterval string `json:"checkpoint_interval"`
+		TraceBufferTimeout string `json:"trace_buffer_timeout"`
+		*Alias
+	}{
+		Alias: (*Alias)(cfg),
+	}
+	
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	
+	// Parse durations
+	var err error
+	if aux.WindowDuration != "" {
+		cfg.WindowDuration, err = time.ParseDuration(aux.WindowDuration)
+		if err != nil {
+			return fmt.Errorf("invalid window_duration: %w", err)
+		}
+	}
+	
+	if aux.CheckpointInterval != "" {
+		cfg.CheckpointInterval, err = time.ParseDuration(aux.CheckpointInterval)
+		if err != nil {
+			return fmt.Errorf("invalid checkpoint_interval: %w", err)
+		}
+	}
+	
+	if aux.TraceBufferTimeout != "" {
+		cfg.TraceBufferTimeout, err = time.ParseDuration(aux.TraceBufferTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid trace_buffer_timeout: %w", err)
+		}
+	}
+	
 	return nil
 }
 
@@ -102,12 +140,12 @@ func (cfg *Config) Validate() error {
 func createDefaultConfig() component.Config {
 	return &Config{
 		SizeK:                    5000,
-		WindowDuration:           "60s",
+		WindowDuration:           60 * time.Second,
 		CheckpointPath:           "",
-		CheckpointInterval:       "10s",
+		CheckpointInterval:       10 * time.Second,
 		TraceAware:               true,
 		TraceBufferMaxSize:       100000,
-		TraceBufferTimeout:       "10s",
+		TraceBufferTimeout:       10 * time.Second,
 		DbCompactionScheduleCron: "",
 		DbCompactionTargetSize:   0,
 	}

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nria-config
+  namespace: {{ .NAMESPACE }}
+data:
+  newrelic-infra.yml: |
+    license_key: ${NRIA_LICENSE_KEY}
+    display_name: "${HOSTNAME}_{{ .NRIA_DISPLAY_NAME_SUFFIX }}"
+    custom_attributes:
+      monitoring_setup: "nria"
+      vm_base_hostname: "${HOSTNAME}"
+    # Metrics
+    host_metrics: true
+    process_metrics: true
