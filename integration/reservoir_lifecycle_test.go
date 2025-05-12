@@ -178,6 +178,9 @@ func TestReservoirLifecycle_FullOperation(t *testing.T) {
 	// Force window rollover to trigger exporting of spans
 	reservoirsampler.ForceReservoirExport(processor2)
 
+	// Wait for any asynchronous operations to complete
+	time.Sleep(1 * time.Second)
+
 	// Assertions - Phase 3
 	capturedTraces2 := capturingSink.GetAllTraces()
 	dbSizeAfter, err := getFileSize(dbPath)
