@@ -149,14 +149,21 @@ func BenchmarkReservoirProcessor(b *testing.B) {
 				// Start the processor
 				err = processor.Start(context.Background(), nil)
 				require.NoError(b, err)
-				defer processor.Shutdown(context.Background())
+				defer func() {
+					err := processor.Shutdown(context.Background())
+					if err != nil {
+						b.Logf("Warning: failed to shutdown processor: %v", err)
+					}
+				}()
 
 				// Generate test data
 				traces := generateTestTraces(bm.tracesPerBatch, bm.spansPerTrace)
 
 				// Run the benchmark loop
 				for pb.Next() {
-					processor.ConsumeTraces(context.Background(), traces)
+					if err := processor.ConsumeTraces(context.Background(), traces); err != nil {
+						b.Logf("Warning: failed to consume traces: %v", err)
+					}
 				}
 			})
 		})
@@ -208,7 +215,12 @@ func BenchmarkReservoirSampling_HighThroughput(b *testing.B) {
 	// Start the processor
 	err = processor.Start(context.Background(), nil)
 	require.NoError(b, err)
-	defer processor.Shutdown(context.Background())
+	defer func() {
+		err := processor.Shutdown(context.Background())
+		if err != nil {
+			b.Logf("Warning: failed to shutdown processor: %v", err)
+		}
+	}()
 
 	// Generate a large number of traces
 	const (
@@ -314,7 +326,12 @@ func BenchmarkTraceCompleteness(b *testing.B) {
 			// Start the processor
 			err = processor.Start(context.Background(), nil)
 			require.NoError(b, err)
-			defer processor.Shutdown(context.Background())
+			defer func() {
+				err := processor.Shutdown(context.Background())
+				if err != nil {
+					b.Logf("Warning: failed to shutdown processor: %v", err)
+				}
+			}()
 
 			// Constants for this benchmark
 			const (
@@ -322,8 +339,8 @@ func BenchmarkTraceCompleteness(b *testing.B) {
 				spansPerTrace = 10
 			)
 
-			// Generate test data
-			rand.Seed(time.Now().UnixNano())
+			// Generate test data with randomization
+			// No need to call rand.Seed in Go 1.20+ as it's automatically initialized
 
 			// Create a slice of all spans from all traces
 			var allSpans []spanInfo

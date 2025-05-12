@@ -21,6 +21,8 @@ func BenchmarkSerialization(b *testing.B) {
 }
 
 // Helper to create test spans for benchmarking
+// Will be used in future benchmark implementations
+// nolint:unused
 func createTestSpanWithResource() reservoirsampler.SpanWithResource {
 	traces := ptrace.NewTraces()
 	rs := traces.ResourceSpans().AppendEmpty()
@@ -46,6 +48,8 @@ func createTestSpanWithResource() reservoirsampler.SpanWithResource {
 }
 
 // Helper to create test trace ID
+// Will be used in future benchmark implementations
+// nolint:unused
 func createTestTraceID(id uint64) pcommon.TraceID {
 	var traceID pcommon.TraceID
 	traceID[0] = byte(id >> 56)
@@ -60,6 +64,8 @@ func createTestTraceID(id uint64) pcommon.TraceID {
 }
 
 // Helper to create test span ID
+// Will be used in future benchmark implementations
+// nolint:unused
 func createTestSpanID(id uint64) pcommon.SpanID {
 	var spanID pcommon.SpanID
 	spanID[0] = byte(id >> 56)

@@ -1,0 +1,128 @@
+# NR-DOT Kubernetes Helm values
+# This configuration is optimized for Kubernetes deployment with persistent storage
+
+# Image configuration
+image:
+  repository: newrelic/nrdot-collector
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# License key for New Relic (set via --set licenseKey=XXX)
+# licenseKey: ""
+
+# OpenTelemetry Collector configuration
+collector:
+  # Log level for the collector
+  logLevel: info
+
+  # Service account name
+  serviceAccount:
+    create: true
+    name: ""
+
+  # Resource settings
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  
+  # Persistence settings (REQUIRED for reservoir sampler)
+  persistence:
+    enabled: true
+    storageClassName: standard
+    size: 1Gi
+    accessMode: ReadWriteOnce
+    
+  # NR-DOT configuration overrides
+  configOverride:
+    # Extensions configuration
+    extensions:
+      file_storage:
+        directory: /var/otelpersist
+        
+    # Receiver configuration
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            
+    # Processor configuration
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 1500
+        spike_limit_mib: 300
+        
+      batch:
+        send_batch_size: 10000
+        timeout: 10s
+        
+      # Reservoir sampler configuration
+      reservoir_sampler:
+        size_k: 5000
+        window_duration: "60s"
+        checkpoint_path: "/var/otelpersist/reservoir.db"
+        checkpoint_interval: "10s"
+        trace_aware: true
+        trace_buffer_max_size: 100000
+        trace_buffer_timeout: "30s"
+        db_compaction_schedule_cron: "0 2 * * 0"
+    
+    # Exporter configuration
+    exporters:
+      otlphttp/newrelic:
+        endpoint: "https://otlp.nr-data.net:4318"
+        headers:
+          api-key: "${NR_LICENSE_KEY}"
+
+    # Service pipeline configuration
+    service:
+      extensions: [health_check, pprof, zpages, file_storage]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, reservoir_sampler]
+          exporters: [otlphttp/newrelic]
+          
+  # Additional Pod annotations
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8888"
+    
+  # Health/readiness settings
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 13133
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 13133
+    initialDelaySeconds: 10
+    periodSeconds: 30
+
+# Network service settings
+service:
+  type: ClusterIP
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      protocol: TCP
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      protocol: TCP
+      targetPort: 4318
+    - name: metrics
+      port: 8888
+      protocol: TCP
+      targetPort: 8888

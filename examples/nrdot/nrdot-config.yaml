@@ -1,0 +1,52 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 1s
+    
+  reservoir_sampler:
+    size_k: 5000
+    window_duration: "60s"
+    checkpoint_path: "/var/otelpersist/reservoir.db"
+    checkpoint_interval: "10s"
+    trace_aware: true
+    trace_buffer_max_size: 100000
+    trace_buffer_timeout: "30s"
+    db_compaction_schedule_cron: "0 2 * * 0"
+    db_compaction_target_size: 104857600
+
+exporters:
+  logging:
+    verbosity: normal
+    
+  otlphttp/newrelic:
+    endpoint: "https://otlp.nr-data.net:4318"
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+
+extensions:
+  health_check:
+  pprof:
+  zpages:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, reservoir_sampler]
+      exporters: [logging, otlphttp/newrelic]
+  
+  extensions: [health_check, pprof, zpages]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed

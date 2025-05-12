@@ -1,0 +1,41 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 1s
+    
+  reservoir_sampler:
+    size_k: 5000
+    window_duration: "60s"
+    checkpoint_path: "./data/reservoir.db"
+    checkpoint_interval: "10s"
+    trace_aware: true
+    trace_buffer_max_size: 100000
+    trace_buffer_timeout: "30s"
+
+exporters:
+  logging:
+    verbosity: detailed
+
+extensions:
+  health_check:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, reservoir_sampler]
+      exporters: [logging]
+  
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: debug

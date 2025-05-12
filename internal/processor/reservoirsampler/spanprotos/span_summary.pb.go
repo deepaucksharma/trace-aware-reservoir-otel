@@ -5,6 +5,7 @@ package spanprotos
 
 import (
 	"fmt"
+
 	"github.com/golang/protobuf/proto"
 )
 

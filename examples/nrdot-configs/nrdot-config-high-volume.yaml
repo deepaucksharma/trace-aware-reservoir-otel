@@ -1,0 +1,96 @@
+# NR-DOT Configuration for High Volume Environments
+# Optimized for environments processing 100K+ spans per second
+
+# Extensions
+extensions:
+  health_check:
+  pprof:
+  zpages:
+  file_storage:
+    directory: /var/otelpersist
+    compaction:
+      directory_path: /var/otelpersist
+      on_start: true
+      on_rebound: true
+
+# Receivers
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 32
+        max_concurrent_streams: 1000
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 32_000_000
+
+# Processors
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 2000
+    spike_limit_mib: 500
+  
+  batch:
+    send_batch_size: 16384
+    timeout: 10s
+    send_batch_max_size: 32768
+  
+  # Reservoir Sampler configuration for high volume
+  reservoir_sampler:
+    # Large reservoir size for comprehensive sampling
+    size_k: 10000
+    
+    # Shorter window for more frequent updates
+    window_duration: "30s"
+    
+    # Path to checkpoint file
+    checkpoint_path: "/var/otelpersist/reservoir.db"
+    
+    # More frequent checkpoints for better durability
+    checkpoint_interval: "15s"
+    
+    # Keep entire traces together
+    trace_aware: true
+    
+    # Larger buffer for handling more concurrent traces
+    trace_buffer_max_size: 200000
+    
+    # Shorter timeout to prevent buffer overflow
+    trace_buffer_timeout: "15s"
+    
+    # Weekly compaction at low-traffic time
+    db_compaction_schedule_cron: "0 2 * * 0"
+    
+    # Compaction target size (100MB)
+    db_compaction_target_size: 104857600
+
+# Exporters
+exporters:
+  otlphttp/newrelic:
+    endpoint: "https://otlp.nr-data.net:4318"
+    headers:
+      api-key: "${NR_LICENSE_KEY}"
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+# Service pipelines
+service:
+  telemetry:
+    logs:
+      level: "info"
+    metrics:
+      level: "detailed"
+  
+  extensions: [health_check, pprof, zpages, file_storage]
+  
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, reservoir_sampler]
+      exporters: [otlphttp/newrelic]

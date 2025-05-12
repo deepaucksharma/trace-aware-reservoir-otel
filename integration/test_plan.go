@@ -2,7 +2,6 @@ package integration
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,14 +46,18 @@ Integration tests are still resolving stack overflow issues in the Protocol Buff
 A more efficient serialization approach is being implemented to address this.
 `
 
-	tempDir, err := ioutil.TempDir("", "test-plan-*")
+	tempDir, err := os.MkdirTemp("", "test-plan-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+			t.Logf("Warning: Failed to remove temp directory: %v", removeErr)
+		}
+	}()
 
 	filePath := filepath.Join(tempDir, "TEST_PLAN_SUMMARY.md")
-	err = ioutil.WriteFile(filePath, []byte(content), 0644)
+	err = os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +66,12 @@ A more efficient serialization approach is being implemented to address this.
 	projectRoot := "/Users/deepaksharma/Desktop/src/trace-aware-reservoir-otel"
 	destPath := filepath.Join(projectRoot, "TEST_PLAN_SUMMARY.md")
 
-	contentBytes, err := ioutil.ReadFile(filePath)
+	contentBytes, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = ioutil.WriteFile(destPath, contentBytes, 0644)
+	err = os.WriteFile(destPath, contentBytes, 0644)
 	if err != nil {
 		t.Fatal(err)
 	}

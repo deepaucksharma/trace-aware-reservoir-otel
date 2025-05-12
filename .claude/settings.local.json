@@ -15,7 +15,26 @@
       "Bash(git push:*)",
       "Bash(git reset:*)",
       "Bash(git remote add:*)",
-      "Bash(go test:*)"
+      "Bash(go test:*)",
+      "Bash(cat:*)",
+      "Bash(go fmt:*)",
+      "Bash(go:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(chmod:*)",
+      "Bash(./fix_reservoir_sampler.sh:*)",
+      "Bash(./fix_remaining.sh:*)",
+      "Bash(./fix_duplicate_imports.sh)",
+      "Bash(ln:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(./run_passing_tests.sh)",
+      "Bash(/Users/deepaksharma/Desktop/src/trace-aware-reservoir-otel/run_passing_tests.sh:*)",
+      "Bash(brew install:*)",
+      "Bash(find:*)",
+      "Bash(git restore:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": []
   }

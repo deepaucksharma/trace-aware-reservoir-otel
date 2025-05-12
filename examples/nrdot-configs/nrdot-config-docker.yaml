@@ -1,0 +1,83 @@
+# NR-DOT Configuration for Docker/Local Development
+# Optimized for local development and testing
+
+# Extensions
+extensions:
+  health_check:
+  pprof:
+  zpages:
+  file_storage:
+    directory: /var/otelpersist
+
+# Receivers
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+# Processors
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 500
+    spike_limit_mib: 100
+  
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+  
+  # Reservoir Sampler configuration for development
+  reservoir_sampler:
+    # Smaller reservoir size for development
+    size_k: 1000
+    
+    # Standard window duration
+    window_duration: "60s"
+    
+    # Path to checkpoint file
+    checkpoint_path: "/var/otelpersist/reservoir.db"
+    
+    # Less frequent checkpoints to reduce I/O
+    checkpoint_interval: "15s"
+    
+    # Keep entire traces together
+    trace_aware: true
+    
+    # Moderate buffer size for development
+    trace_buffer_max_size: 20000
+    
+    # Standard timeout
+    trace_buffer_timeout: "30s"
+    
+    # Weekly compaction at low-traffic time
+    db_compaction_schedule_cron: "0 2 * * 0"
+
+# Exporters
+exporters:
+  otlphttp/newrelic:
+    endpoint: "https://otlp.nr-data.net:4318"
+    headers:
+      api-key: "${NR_LICENSE_KEY}"
+  
+  # Debug exporter for local development
+  debug:
+    verbosity: detailed
+
+# Service pipelines
+service:
+  telemetry:
+    logs:
+      level: "debug"
+    metrics:
+      level: "detailed"
+  
+  extensions: [health_check, pprof, zpages, file_storage]
+  
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, reservoir_sampler]
+      exporters: [otlphttp/newrelic, debug]

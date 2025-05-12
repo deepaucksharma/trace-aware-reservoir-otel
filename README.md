@@ -1,7 +1,7 @@
 # Trace-Aware Reservoir Sampling for OpenTelemetry
 
-[![CI](https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel/actions/workflows/ci.yml/badge.svg)](https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/deepaucksharma-nr/trace-aware-reservoir-otel)](https://goreportcard.com/report/github.com/deepaucksharma-nr/trace-aware-reservoir-otel)
+[![CI](https://github.com/deepaksharma/trace-aware-reservoir-otel/actions/workflows/ci.yml/badge.svg)](https://github.com/deepaksharma/trace-aware-reservoir-otel/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/deepaksharma/trace-aware-reservoir-otel)](https://goreportcard.com/report/github.com/deepaksharma/trace-aware-reservoir-otel)
 
 This project implements a specialized trace-aware reservoir sampling processor for the OpenTelemetry Collector. It provides statistically sound sampling while preserving complete traces, optimized for high-throughput and memory efficiency.
 
@@ -14,61 +14,50 @@ This project implements a specialized trace-aware reservoir sampling processor f
 - **Memory Optimized**: Custom binary serialization for efficient checkpointing of large trace volumes
 - **Batched Processing**: Handles large trace reservoirs efficiently through batched operations
 - **Configurable**: Flexible configuration for window sizes, sampling rates, and more
+- **NR-DOT Integration**: Seamless integration with New Relic Distribution of OpenTelemetry
 
-## Quick Start
+## Quick Start (Single Command)
 
-### Setup and Installation
+Our streamlined installer handles everything in one step:
 
 ```bash
 # Clone the repository
-git clone https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel.git
+git clone https://github.com/deepaksharma/trace-aware-reservoir-otel.git
 cd trace-aware-reservoir-otel
 
-# Run the setup script
-chmod +x setup.sh
-./setup.sh
-
-# Build the collector
-make build
-
-# Run with the default configuration
-./bin/pte-collector --config=config.yaml
-```
-
-### New Relic Integration
-
-To send sampled spans to New Relic:
-
-```bash
 # Set your New Relic license key
-export NEW_RELIC_LICENSE_KEY=your-license-key-here
+export NR_LICENSE_KEY=your-license-key
 
-# Edit config.yaml to uncomment the otlphttp exporter
-# Then run the collector
-./bin/pte-collector --config=config.yaml
+# Make script executable
+chmod +x install.sh
+
+# Run the installer
+./install.sh
 ```
 
-## NR-DOT Integration
+For more details, see [docs/user-guide/getting-started.md](docs/user-guide/getting-started.md).
 
-For integration with the New Relic Distribution of OpenTelemetry (NR-DOT), we provide a comprehensive set of resources in the `nrdot` directory:
+## Installation Options
+
+### Option 1: Docker Mode (Local Development)
 
 ```bash
-# Navigate to NR-DOT integration directory
-cd nrdot
+# Set Docker mode
+export NRDOT_MODE=docker
 
-# Run the build script to create a custom NR-DOT image
-chmod +x build_nrdot.sh
-./build_nrdot.sh
-
-# Deploy using Helm
-helm upgrade --install nr-otel newrelic/nrdot-collector \
-  --namespace observability \
-  --create-namespace \
-  --values values.reservoir.yaml \
-  --set licenseKey=YOUR_NEW_RELIC_LICENSE_KEY
+# Run the installer
+./install.sh
 ```
 
-For detailed instructions, see [NRDOT_INTEGRATION.md](nrdot/NRDOT_INTEGRATION.md).
+### Option 2: Kubernetes Mode (Production)
+
+```bash
+# Set Kubernetes mode (default)
+export NRDOT_MODE=kubernetes
+
+# Run the installer
+./install.sh
+```
 
 ## How It Works
 
@@ -88,50 +77,33 @@ In trace-aware mode, the processor:
 2. Applies reservoir sampling to complete traces, treating each trace as a unit
 3. Either keeps or drops entire traces, preserving the parent-child relationships
 
-### Memory Optimization
-
-The processor implements several memory-optimization strategies:
-
-1. **Custom Binary Serialization**: Instead of using Protocol Buffers for serialization (which can cause stack overflows with large data volumes), the processor uses a custom direct binary serialization format that avoids excessive recursive copying.
-
-2. **Batched Processing**: When checkpointing large reservoirs, spans are processed in small batches to avoid memory pressure.
-
-3. **Selective Attribute Storage**: Only essential attributes (like service name) are stored in the full form, reducing memory footprint.
-
-4. **Incremental Checkpointing**: Distributes checkpoint operations over time to prevent large memory spikes.
-
 ## Configuration
 
+You can customize the reservoir sampler by editing your configuration file or using environment variables.
+
+### Example Configuration
+
 ```yaml
-processors:
-  reservoir_sampler:
-    # Maximum reservoir size (number of spans to keep)
-    size_k: 5000
-    
-    # Duration of each sampling window
-    window_duration: 60s
-    
-    # Path to the checkpoint file for persistence
-    checkpoint_path: /var/lib/otelcol/reservoir_checkpoint.db
-    
-    # How often to write checkpoints
-    checkpoint_interval: 10s
-    
-    # Enable trace-aware sampling
-    trace_aware: true
-    
-    # Maximum traces to buffer at once (for trace-aware mode)
-    trace_buffer_max_size: 100000
-    
-    # How long to wait for a trace to complete
-    trace_buffer_timeout: 10s
-    
-    # Optional: Cron schedule for database compaction
-    db_compaction_schedule_cron: "0 0 * * *"  # Daily at midnight
-    
-    # Optional: Target size for database after compaction (bytes)
-    db_compaction_target_size: 104857600  # 100MB
+# Size of the reservoir (number of traces to sample)
+size_k: 5000
+
+# Duration of each sampling window
+window_duration: "60s"
+
+# How often to save checkpoint state
+checkpoint_interval: "10s"
+
+# Whether to keep entire traces together
+trace_aware: true
+
+# Maximum spans to buffer while waiting for trace completion
+trace_buffer_max_size: 100000
+
+# Maximum time to wait for spans in a trace
+trace_buffer_timeout: "30s"
 ```
+
+For complete configuration details, see [docs/user-guide/configuration.md](docs/user-guide/configuration.md).
 
 ## Performance Considerations
 
@@ -142,73 +114,28 @@ The reservoir sampler is designed for high-throughput environments with the foll
 - **Disk I/O**: Periodic writes during checkpointing, controlled by checkpoint_interval
 - **Scaling**: Handles 100K+ spans per second with proper configuration
 
-See [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) for detailed performance information and tuning guidelines.
+For performance tuning recommendations, see [docs/user-guide/performance-tuning.md](docs/user-guide/performance-tuning.md).
 
 ## Monitoring
 
 The processor exports several metrics to monitor its operation:
 
-- `reservoir_sampler.reservoir_size`: Current number of spans in the reservoir
-- `reservoir_sampler.window_count`: Total spans seen in the current window
-- `reservoir_sampler.trace_buffer_size`: Number of traces in the buffer
-- `reservoir_sampler.lru_evictions`: Number of trace evictions from the buffer
-- `reservoir_sampler.checkpoint_age`: Time since the last checkpoint
+- `pte_reservoir_traces_in_reservoir_count`: Current traces in the reservoir
+- `pte_reservoir_checkpoint_age_seconds`: Time since last checkpoint
+- `pte_reservoir_db_size_bytes`: Size of the checkpoint file
+- `pte_reservoir_lru_evictions_total`: Trace buffer evictions (high = increase buffer)
+- `pte_reservoir_checkpoint_errors_total`: Failed checkpoints (should be 0)
+- `pte_reservoir_restore_success_total`: Successful restorations after restart
 
-For comprehensive monitoring recommendations, see:
-- [DASHBOARD_GUIDE.md](nrdot/monitoring/DASHBOARD_GUIDE.md) - Dashboard setup guide
-- [ALERTS_CONFIG.md](nrdot/monitoring/ALERTS_CONFIG.md) - Alert configuration
-
-## Troubleshooting
-
-For common issues and their solutions, refer to:
-- [TROUBLESHOOTING.md](nrdot/TROUBLESHOOTING.md) - Comprehensive troubleshooting guide
-
-## Building and Running
-
-### Prerequisites
-
-- Go 1.21 or later
-- OpenTelemetry Collector 0.91.0 or later
-
-### Build
-
-```bash
-make build
-```
-
-### Run
-
-```bash
-./bin/pte-collector --config=config.yaml
-
-# Or use the Makefile to run:
-make run
-```
-
-## Usage Example
-
-```yaml
-# Example pipeline configuration
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch, reservoir_sampler]
-      exporters: [debug, otlphttp]
-
-  # Optional telemetry settings
-  telemetry:
-    metrics:
-      level: detailed
-```
+For complete monitoring information, see [docs/user-guide/monitoring.md](docs/user-guide/monitoring.md).
 
 ## Documentation
 
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) - Overall implementation plan
-- [TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) - Detailed technical documentation
-- [NRDOT_INTEGRATION.md](nrdot/NRDOT_INTEGRATION.md) - NR-DOT integration guide
-- [TROUBLESHOOTING.md](nrdot/TROUBLESHOOTING.md) - Troubleshooting guide
-- [examples/config-examples.yaml](examples/config-examples.yaml) - Example configurations
+- [User Guide](docs/user-guide/README.md) - How to use, configure, and monitor the reservoir sampler
+- [Developer Guide](docs/developer-guide/README.md) - How to build, modify, and extend the reservoir sampler
+- [API Reference](docs/api-reference/README.md) - API and interface details
+- [Examples](docs/examples/README.md) - Ready-to-use configurations and examples
+- [NR-DOT Integration](docs/nrdot/README.md) - Integrating with New Relic Distribution of OpenTelemetry
 
 ## Testing
 
@@ -219,8 +146,28 @@ make test
 
 Run end-to-end tests:
 ```bash
-cd e2e
-go test ./tests -v
+make e2e-tests
+```
+
+Run full integration tests:
+```bash
+make integration-tests
+```
+
+Run performance tests:
+```bash
+make performance-tests
+```
+
+Run stress tests:
+```bash
+make stress-tests
+```
+
+Run all integration tests with detailed feedback:
+```bash
+cd integration
+./run_integration_tests.sh
 ```
 
 Run benchmarks:
@@ -237,6 +184,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+For detailed contribution guidelines, see [docs/developer-guide/contributing.md](docs/developer-guide/contributing.md).
 
 ## License
 
