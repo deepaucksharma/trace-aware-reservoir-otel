@@ -38,8 +38,10 @@ lint:
 bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchtime=2s -timeout=5m github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
-	@echo "Running performance tests..."
-	$(GOTEST) -timeout=5m ./performance/...
+	@if [ -d "./performance" ]; then \
+		echo "Running performance tests..."; \
+		$(GOTEST) -timeout=5m ./performance/...; \
+	fi
 
 coverage:
 	@echo "Generating coverage report..."
