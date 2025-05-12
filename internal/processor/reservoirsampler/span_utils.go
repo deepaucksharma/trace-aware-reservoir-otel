@@ -7,6 +7,7 @@ import (
 )
 
 // SpanKey is a structure that uniquely identifies a span
+// It contains the trace ID and span ID that form a composite key for spans.
 type SpanKey struct {
 	TraceID pcommon.TraceID
 	SpanID  pcommon.SpanID
@@ -35,6 +36,7 @@ func isRootSpan(span ptrace.Span) bool {
 }
 
 // SpanWithResource is a wrapper that keeps a span together with its resource information
+// This structure allows preserving the original resource and scope context when handling spans.
 type SpanWithResource struct {
 	Span     ptrace.Span
 	Resource pcommon.Resource
@@ -45,19 +47,19 @@ type SpanWithResource struct {
 func cloneSpanWithContext(span ptrace.Span, resource pcommon.Resource, scope pcommon.InstrumentationScope) SpanWithResource {
 	// Create a new traces object to hold the cloned data
 	traces := ptrace.NewTraces()
-	
+
 	// Add a resource span
 	rs := traces.ResourceSpans().AppendEmpty()
 	resource.CopyTo(rs.Resource())
-	
+
 	// Add a scope span
 	ss := rs.ScopeSpans().AppendEmpty()
 	scope.CopyTo(ss.Scope())
-	
+
 	// Add the span
 	newSpan := ss.Spans().AppendEmpty()
 	span.CopyTo(newSpan)
-	
+
 	return SpanWithResource{
 		Span:     newSpan,
 		Resource: rs.Resource(),
@@ -73,22 +75,22 @@ func insertSpanIntoTraces(traces ptrace.Traces, swr SpanWithResource) {
 	var matchingSS ptrace.ScopeSpans
 	foundResource := false
 	foundScope := false
-	
+
 	// Look for a matching resource
 	for i := 0; i < resourceSpans.Len(); i++ {
 		rs := resourceSpans.At(i)
-		
+
 		// TODO: Implement proper resource matching
 		// For now, just append to a new resource span
 		if !foundResource {
 			matchingRS = rs
 			foundResource = true
-			
+
 			// Look for a matching scope within this resource
 			scopeSpans := rs.ScopeSpans()
 			for j := 0; j < scopeSpans.Len(); j++ {
 				ss := scopeSpans.At(j)
-				
+
 				// TODO: Implement proper scope matching
 				// For now, just append to a new scope span
 				if !foundScope {
@@ -97,28 +99,28 @@ func insertSpanIntoTraces(traces ptrace.Traces, swr SpanWithResource) {
 					break
 				}
 			}
-			
+
 			if !foundScope {
 				// No matching scope found, create a new one
 				matchingSS = rs.ScopeSpans().AppendEmpty()
 				swr.Scope.CopyTo(matchingSS.Scope())
 				foundScope = true
 			}
-			
+
 			break
 		}
 	}
-	
+
 	if !foundResource {
 		// No matching resource found, create a new one
 		matchingRS = resourceSpans.AppendEmpty()
 		swr.Resource.CopyTo(matchingRS.Resource())
-		
+
 		// Create a new scope span
 		matchingSS = matchingRS.ScopeSpans().AppendEmpty()
 		swr.Scope.CopyTo(matchingSS.Scope())
 	}
-	
+
 	// Add the span to the scope
 	newSpan := matchingSS.Spans().AppendEmpty()
 	swr.Span.CopyTo(newSpan)

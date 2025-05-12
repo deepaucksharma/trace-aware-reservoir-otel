@@ -18,7 +18,7 @@ jobs:
           check-latest: true
 
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -28,11 +28,14 @@ jobs:
       - name: Build
         run: go build -v ./...
 
-      - name: Test
-        run: go test -v github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
+      - name: Unit Tests
+        run: make unit-tests
+
+      - name: Integration Tests (Short Mode)
+        run: make integration-tests-short
 
       - name: Run benchmarks
-        run: go test -bench=. -benchtime=1s github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
+        run: make bench
 
   lint:
     name: Lint
@@ -45,13 +48,13 @@ jobs:
           check-latest: true
 
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v3
         with:
           version: latest
-          args: --timeout=5m
+          args: --timeout=5m --verbose
 
   code-coverage:
     name: Code Coverage
@@ -64,10 +67,10 @@ jobs:
           check-latest: true
 
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Generate coverage report
-        run: go test -coverprofile=coverage.out -covermode=atomic github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/...
+        run: make coverage
 
       - name: Upload coverage report
         uses: codecov/codecov-action@v3

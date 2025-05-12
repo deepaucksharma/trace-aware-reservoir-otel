@@ -8,6 +8,7 @@ import (
 )
 
 // Config defines configuration for the reservoir sampler processor.
+// It includes settings for sampling window size, persistence, and trace-aware sampling.
 type Config struct {
 	// SizeK is the max number of spans to store in the reservoir
 	SizeK int `mapstructure:"size_k"`
@@ -100,13 +101,13 @@ func (cfg *Config) Validate() error {
 // CreateDefaultConfig creates the default configuration for the processor.
 func createDefaultConfig() component.Config {
 	return &Config{
-		SizeK:                  5000,
-		WindowDuration:         "60s",
-		CheckpointPath:         "",
-		CheckpointInterval:     "10s",
-		TraceAware:             true,
-		TraceBufferMaxSize:     100000,
-		TraceBufferTimeout:     "10s",
+		SizeK:                    5000,
+		WindowDuration:           "60s",
+		CheckpointPath:           "",
+		CheckpointInterval:       "10s",
+		TraceAware:               true,
+		TraceBufferMaxSize:       100000,
+		TraceBufferTimeout:       "10s",
 		DbCompactionScheduleCron: "",
 		DbCompactionTargetSize:   0,
 	}

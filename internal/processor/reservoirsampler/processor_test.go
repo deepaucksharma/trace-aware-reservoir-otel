@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// TestCreateDefaultConfig tests that a default configuration can be created
 func TestCreateDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
@@ -22,6 +23,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 	// Component validation is handled differently in newer versions
 }
 
+// TestCreateProcessor tests that a processor can be created from a configuration
 func TestCreateProcessor(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
@@ -48,10 +50,11 @@ func TestCreateProcessor(t *testing.T) {
 	require.NotNil(t, proc)
 }
 
+// TestConfigValidation tests that configuration validation works as expected
 func TestConfigValidation(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	
+
 	// Valid config
 	cfg.SizeK = 100
 	cfg.WindowDuration = "30s"
@@ -60,120 +63,122 @@ func TestConfigValidation(t *testing.T) {
 	cfg.TraceAware = true
 	cfg.TraceBufferMaxSize = 1000
 	cfg.TraceBufferTimeout = "5s"
-	
+
 	assert.NoError(t, cfg.Validate())
-	
+
 	// Invalid config: negative size
 	cfg.SizeK = -1
 	assert.Error(t, cfg.Validate())
 	cfg.SizeK = 100 // Reset
-	
+
 	// Invalid config: empty window duration
 	cfg.WindowDuration = ""
 	assert.Error(t, cfg.Validate())
 	cfg.WindowDuration = "30s" // Reset
-	
+
 	// Invalid config: empty checkpoint path
 	cfg.CheckpointPath = ""
 	assert.Error(t, cfg.Validate())
 	cfg.CheckpointPath = "/tmp/checkpoint.db" // Reset
-	
+
 	// Invalid config: empty checkpoint interval
 	cfg.CheckpointInterval = ""
 	assert.Error(t, cfg.Validate())
 	cfg.CheckpointInterval = "5s" // Reset
-	
+
 	// Invalid config: trace-aware enabled but missing buffer configs
 	cfg.TraceAware = true
 	cfg.TraceBufferMaxSize = 0
 	assert.Error(t, cfg.Validate())
 	cfg.TraceBufferMaxSize = 1000 // Reset
-	
+
 	cfg.TraceBufferTimeout = ""
 	assert.Error(t, cfg.Validate())
 	cfg.TraceBufferTimeout = "5s" // Reset
 }
 
+// TestReservoirSampling tests the core reservoir sampling algorithm functionality
 func TestReservoirSampling(t *testing.T) {
 	// Create processor with in-memory storage (no checkpoints)
 	cfg := &Config{
-		SizeK:               10,
-		WindowDuration:      "10s",
-		CheckpointPath:      "",
-		CheckpointInterval:  "1s",
-		TraceAware:          false,
+		SizeK:              10,
+		WindowDuration:     "10s",
+		CheckpointPath:     "",
+		CheckpointInterval: "1s",
+		TraceAware:         false,
 	}
-	
+
 	sink := new(consumertest.TracesSink)
 	set := component.TelemetrySettings{
-		Logger: zap.NewNop(),
+		Logger:        zap.NewNop(),
 		MeterProvider: noop.NewMeterProvider(),
 	}
-	
+
 	ctx := context.Background()
 	proc, err := newReservoirProcessor(ctx, set, cfg, sink)
 	require.NoError(t, err)
-	
+
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(t, err)
 	defer proc.Shutdown(ctx)
-	
+
 	// Create more spans than the reservoir size
 	numSpans := 100
 	traces := generateTraces(numSpans)
-	
+
 	// Process the traces
 	err = proc.ConsumeTraces(ctx, traces)
 	require.NoError(t, err)
-	
+
 	// Check if the reservoir size is limited to the configured size
 	p, ok := proc.(*reservoirProcessor)
 	require.True(t, ok)
-	
+
 	p.lock.RLock()
 	reservoirSize := len(p.reservoir)
 	windowCount := p.windowCount.Load()
 	p.lock.RUnlock()
-	
+
 	assert.Equal(t, int64(numSpans), windowCount, "Window count should match the number of spans processed")
 	assert.LessOrEqual(t, reservoirSize, cfg.SizeK, "Reservoir size should not exceed the configured limit")
 }
 
+// TestTraceAwareSampling tests trace-aware sampling functionality
 func TestTraceAwareSampling(t *testing.T) {
 	// Create processor with trace-aware sampling
 	cfg := &Config{
-		SizeK:               10,
-		WindowDuration:      "10s",
-		CheckpointPath:      "",
-		CheckpointInterval:  "1s",
-		TraceAware:          true,
-		TraceBufferMaxSize:  100,
-		TraceBufferTimeout:  "50ms", // Short timeout for testing
+		SizeK:              10,
+		WindowDuration:     "10s",
+		CheckpointPath:     "",
+		CheckpointInterval: "1s",
+		TraceAware:         true,
+		TraceBufferMaxSize: 100,
+		TraceBufferTimeout: "50ms", // Short timeout for testing
 	}
-	
+
 	sink := new(consumertest.TracesSink)
 	set := component.TelemetrySettings{
-		Logger: zap.NewNop(),
+		Logger:        zap.NewNop(),
 		MeterProvider: noop.NewMeterProvider(),
 	}
-	
+
 	ctx := context.Background()
 	proc, err := newReservoirProcessor(ctx, set, cfg, sink)
 	require.NoError(t, err)
-	
+
 	// Start the processor
 	err = proc.Start(ctx, nil)
 	require.NoError(t, err)
 	defer proc.Shutdown(ctx)
-	
+
 	// Create some traces with shared trace IDs
 	traces := generateTracesWithSharedIDs(20, 5) // 20 spans across 5 trace IDs
-	
+
 	// Process the traces
 	err = proc.ConsumeTraces(ctx, traces)
 	require.NoError(t, err)
-	
+
 	// Wait longer for the trace buffer to process
 	time.Sleep(400 * time.Millisecond)
 
@@ -192,14 +197,14 @@ func TestTraceAwareSampling(t *testing.T) {
 // generateTraces creates test trace data with the specified number of spans
 func generateTraces(numSpans int) ptrace.Traces {
 	traces := ptrace.NewTraces()
-	
+
 	for i := 0; i < numSpans; i++ {
 		rs := traces.ResourceSpans().AppendEmpty()
 		rs.Resource().Attributes().PutStr("service.name", "test-service")
-		
+
 		ss := rs.ScopeSpans().AppendEmpty()
 		ss.Scope().SetName("test-scope")
-		
+
 		span := ss.Spans().AppendEmpty()
 		span.SetName("test-span")
 		span.SetTraceID(generateTraceID(i))
@@ -207,24 +212,24 @@ func generateTraces(numSpans int) ptrace.Traces {
 		span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(-10 * time.Millisecond)))
 		span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 	}
-	
+
 	return traces
 }
 
 // generateTracesWithSharedIDs creates test trace data with shared trace IDs
 func generateTracesWithSharedIDs(numSpans, numTraces int) ptrace.Traces {
 	traces := ptrace.NewTraces()
-	
+
 	for i := 0; i < numSpans; i++ {
 		rs := traces.ResourceSpans().AppendEmpty()
 		rs.Resource().Attributes().PutStr("service.name", "test-service")
-		
+
 		ss := rs.ScopeSpans().AppendEmpty()
 		ss.Scope().SetName("test-scope")
-		
+
 		span := ss.Spans().AppendEmpty()
 		span.SetName("test-span")
-		
+
 		// Use modulo to create shared trace IDs
 		traceIDIndex := i % numTraces
 		span.SetTraceID(generateTraceID(traceIDIndex))
@@ -232,7 +237,7 @@ func generateTracesWithSharedIDs(numSpans, numTraces int) ptrace.Traces {
 		span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(-10 * time.Millisecond)))
 		span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 	}
-	
+
 	return traces
 }
 

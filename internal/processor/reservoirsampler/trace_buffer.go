@@ -10,7 +10,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// TraceBuffer holds spans grouped by trace ID for trace-aware sampling
+// TraceBuffer holds spans grouped by trace ID for trace-aware sampling.
+// It maintains an in-memory buffer of spans organized by trace ID, with eviction
+// policies based on trace age and a maximum buffer size.
 type TraceBuffer struct {
 	// Maps trace IDs to all spans in that trace
 	traces map[pcommon.TraceID]map[pcommon.SpanID]SpanWithResource
@@ -37,11 +39,11 @@ type TraceBuffer struct {
 // NewTraceBuffer creates a new trace buffer with the specified size and timeout
 func NewTraceBuffer(maxTraces int, timeout time.Duration, logger *zap.Logger) *TraceBuffer {
 	return &TraceBuffer{
-		traces:      make(map[pcommon.TraceID]map[pcommon.SpanID]SpanWithResource),
-		lastUpdated: make(map[pcommon.TraceID]time.Time),
-		maxTraces:   maxTraces,
-		timeout:     timeout,
-		logger:      logger,
+		traces:          make(map[pcommon.TraceID]map[pcommon.SpanID]SpanWithResource),
+		lastUpdated:     make(map[pcommon.TraceID]time.Time),
+		maxTraces:       maxTraces,
+		timeout:         timeout,
+		logger:          logger,
 		evictionCounter: nil, // Set externally if needed
 	}
 }
@@ -75,7 +77,7 @@ func (tb *TraceBuffer) AddSpan(span ptrace.Span, resource pcommon.Resource, scop
 
 	// Store the span with its context
 	tb.traces[traceID][spanID] = cloneSpanWithContext(span, resource, scope)
-	
+
 	// Update last update time
 	tb.lastUpdated[traceID] = time.Now()
 }
@@ -94,12 +96,12 @@ func (tb *TraceBuffer) GetCompletedTraces() []ptrace.Traces {
 		if now.Sub(lastUpdate) >= tb.timeout {
 			// Create a new traces collection for this trace
 			traces := ptrace.NewTraces()
-			
+
 			// Add all spans from this trace
 			for _, spanWithRes := range tb.traces[traceID] {
 				insertSpanIntoTraces(traces, spanWithRes)
 			}
-			
+
 			completedTraces = append(completedTraces, traces)
 			tracesToRemove = append(tracesToRemove, traceID)
 		}

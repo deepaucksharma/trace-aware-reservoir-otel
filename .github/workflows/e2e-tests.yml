@@ -28,7 +28,7 @@ jobs:
           check-latest: true
 
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -38,26 +38,28 @@ jobs:
       - name: Build Collector
         run: make build
 
+      - name: Run Integration Tests
+        run: make integration-tests
+
       - name: Run E2E tests
         run: |
-          cd e2e/tests
           case "${{ github.event.inputs.test_type }}" in
             all)
-              go test -v -all
+              make e2e-tests
               ;;
             throughput)
-              go test -v -throughput
+              go test -v -timeout=15m ./e2e/tests -run TestThroughput
               ;;
             latency)
-              go test -v -latency
+              go test -v -timeout=15m ./e2e/tests -run TestLatency
               ;;
             durability)
-              go test -v -durability
+              go test -v -timeout=15m ./e2e/tests -run TestDurability
               ;;
             resource)
-              go test -v -resource
+              go test -v -timeout=15m ./e2e/tests -run TestResourceUsage
               ;;
             trace)
-              go test -v -trace
+              go test -v -timeout=15m ./e2e/tests -run TestTracePreservation
               ;;
           esac

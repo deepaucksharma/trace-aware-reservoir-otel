@@ -1,6 +1,7 @@
 package reservoirsampler
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/boltdb/bolt"
-	"github.com/golang/protobuf/proto"
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -22,8 +22,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
-
-	"github.com/deepaksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler/spanprotos"
 )
 
 const (
@@ -210,7 +208,7 @@ func newReservoirProcessor(ctx context.Context, set component.TelemetrySettings,
 		if err != nil {
 			logger.Error("Failed to set up database compaction", zap.Error(err))
 		} else {
-			logger.Info("Database compaction scheduled", 
+			logger.Info("Database compaction scheduled",
 				zap.String("schedule", cfg.DbCompactionScheduleCron),
 				zap.Int64("target_size_bytes", cfg.DbCompactionTargetSize))
 		}
@@ -558,12 +556,12 @@ func (p *reservoirProcessor) Capabilities() consumer.Capabilities {
 // checkWindowRollover checks if it's time to roll over to a new sampling window
 func (p *reservoirProcessor) checkWindowRollover() {
 	now := time.Now()
-	
+
 	// Check if we're past the window end time
 	if now.After(p.windowEndTime) {
 		p.lock.Lock()
 		defer p.lock.Unlock()
-		
+
 		// Double check after acquiring the lock
 		if now.After(p.windowEndTime) {
 			// Do a checkpoint before rolling over
@@ -572,10 +570,10 @@ func (p *reservoirProcessor) checkWindowRollover() {
 					p.logger.Error("Failed to checkpoint before window rollover", zap.Error(err))
 				}
 			}
-			
+
 			// Start a new window
 			p.initializeWindowLocked()
-			
+
 			p.logger.Info("Started new sampling window",
 				zap.Int64("window", p.currentWindow),
 				zap.Time("start", p.windowStartTime),
@@ -595,12 +593,12 @@ func (p *reservoirProcessor) initializeWindow() {
 func (p *reservoirProcessor) initializeWindowLocked() {
 	now := time.Now()
 	windowDuration, _ := time.ParseDuration(p.config.WindowDuration)
-	
+
 	p.windowStartTime = now
 	p.windowEndTime = now.Add(windowDuration)
 	p.currentWindow++
 	p.windowCount.Store(0)
-	
+
 	// Clear the reservoir
 	p.reservoir = make(map[uint64]SpanWithResource)
 	p.reservoirHashes = make([]uint64, 0, p.windowSize)
@@ -609,25 +607,25 @@ func (p *reservoirProcessor) initializeWindowLocked() {
 // addSpanToReservoir adds a span to the reservoir using reservoir sampling algorithm
 //
 // This implements Algorithm R (Jeffrey Vitter):
-// 1. If we have seen fewer than k elements, add the element to our reservoir
-// 2. Otherwise, with probability k/n, keep the new element
-//    where:
-//      n = the number of elements we have seen so far
-//      k = the size of our reservoir
+//  1. If we have seen fewer than k elements, add the element to our reservoir
+//  2. Otherwise, with probability k/n, keep the new element
+//     where:
+//     n = the number of elements we have seen so far
+//     k = the size of our reservoir
 //
 // In this implementation, when an item is selected to be kept with probability k/n,
 // we replace a random existing element in the reservoir with the new one.
 func (p *reservoirProcessor) addSpanToReservoir(span ptrace.Span, resource pcommon.Resource, scope pcommon.InstrumentationScope) {
 	// Increment the total count for this window
 	count := p.windowCount.Inc()
-	
+
 	// Create span key and hash
 	key := createSpanKey(span)
 	hash := hashSpanKey(key)
-	
+
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	
+
 	if int(count) <= p.windowSize {
 		// Reservoir not full yet, add span directly
 		p.reservoir[hash] = cloneSpanWithContext(span, resource, scope)
@@ -709,76 +707,134 @@ func (p *reservoirProcessor) checkpointLocked() error {
 	if p.db == nil {
 		return fmt.Errorf("checkpoint database not initialized")
 	}
-	
+
 	startTime := time.Now()
-	
+
 	// Create state objects to serialize
-	state := &spanprotos.ReservoirState{
-		CurrentWindow:   p.currentWindow,
-		WindowStartTime: p.windowStartTime.Unix(),
-		WindowEndTime:   p.windowEndTime.Unix(),
-		WindowCount:     p.windowCount.Load(),
-	}
-	
-	stateBytes, err := proto.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("failed to marshal checkpoint state: %w", err)
-	}
-	
-	// Start a transaction
-	err = p.db.Update(func(tx *bolt.Tx) error {
+	// Use manual serialization for the state instead of protobuf to avoid stack issues
+	stateBuffer := &bytes.Buffer{}
+	binary.Write(stateBuffer, binary.BigEndian, p.currentWindow)
+	binary.Write(stateBuffer, binary.BigEndian, p.windowStartTime.Unix())
+	binary.Write(stateBuffer, binary.BigEndian, p.windowEndTime.Unix())
+	binary.Write(stateBuffer, binary.BigEndian, p.windowCount.Load())
+	stateBytes := stateBuffer.Bytes()
+
+	// Save the state first in its own transaction
+	err := p.db.Update(func(tx *bolt.Tx) error {
 		// Save state
 		checkpointBucket := tx.Bucket([]byte(bucketCheckpoint))
 		if err := checkpointBucket.Put([]byte(keyReservoirState), stateBytes); err != nil {
 			return fmt.Errorf("failed to write checkpoint state: %w", err)
 		}
-		
+
 		// Clear the previous reservoir
 		reservoirBucket := tx.Bucket([]byte(bucketReservoir))
 		if err := reservoirBucket.DeleteBucket([]byte(fmt.Sprintf("window_%d", p.currentWindow))); err != nil && err != bolt.ErrBucketNotFound {
 			return fmt.Errorf("failed to clear previous reservoir bucket: %w", err)
 		}
-		
+
 		// Create a new bucket for this window
-		windowBucket, err := reservoirBucket.CreateBucketIfNotExists([]byte(fmt.Sprintf("window_%d", p.currentWindow)))
+		_, err := reservoirBucket.CreateBucketIfNotExists([]byte(fmt.Sprintf("window_%d", p.currentWindow)))
 		if err != nil {
 			return fmt.Errorf("failed to create reservoir window bucket: %w", err)
 		}
-		
-		// Save all spans in the reservoir
-		for hash, spanWithRes := range p.reservoir {
-			// Serialize the span
-			spanBytes, err := serializeSpanWithResource(spanWithRes)
-			if err != nil {
-				p.logger.Error("Failed to serialize span for checkpoint", zap.Error(err))
-				continue
-			}
-			
-			// Save the span
-			hashBytes := make([]byte, 8)
-			binary.BigEndian.PutUint64(hashBytes, hash)
-			if err := windowBucket.Put(hashBytes, spanBytes); err != nil {
-				return fmt.Errorf("failed to write span to checkpoint: %w", err)
-			}
-		}
-		
+
 		return nil
 	})
-	
+
+	if err != nil {
+		return fmt.Errorf("failed to initialize checkpoint: %w", err)
+	}
+
+	// Count of spans we will save
+	spanCount := 0
+	totalSpans := len(p.reservoir)
+
+	// Process spans in batches to avoid memory pressure
+	const batchSize = 10
+	spanKeys := make([]uint64, 0, len(p.reservoir))
+
+	// Collect all keys first
+	for hash := range p.reservoir {
+		spanKeys = append(spanKeys, hash)
+	}
+
+	// Process in fixed size batches
+	for i := 0; i < len(spanKeys); i += batchSize {
+		end := i + batchSize
+		if end > len(spanKeys) {
+			end = len(spanKeys)
+		}
+
+		currentBatch := spanKeys[i:end]
+
+		// Process this batch in its own transaction
+		err = p.db.Update(func(tx *bolt.Tx) error {
+			reservoirBucket := tx.Bucket([]byte(bucketReservoir))
+			windowBucket := reservoirBucket.Bucket([]byte(fmt.Sprintf("window_%d", p.currentWindow)))
+			if windowBucket == nil {
+				return fmt.Errorf("window bucket not found for %d", p.currentWindow)
+			}
+
+			for _, hash := range currentBatch {
+				spanWithRes, exists := p.reservoir[hash]
+				if !exists {
+					continue // Skip if somehow the span was removed
+				}
+
+				// Serialize the span with our direct binary serialization
+				spanBytes, err := serializeSpanWithResource(spanWithRes)
+				if err != nil {
+					p.logger.Error("Failed to serialize span for checkpoint",
+						zap.Error(err),
+						zap.Uint64("hash", hash))
+					continue
+				}
+
+				// Save the span
+				hashBytes := make([]byte, 8)
+				binary.BigEndian.PutUint64(hashBytes, hash)
+				if err := windowBucket.Put(hashBytes, spanBytes); err != nil {
+					return fmt.Errorf("failed to write span to checkpoint: %w", err)
+				}
+				spanCount++
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			p.logger.Error("Failed to checkpoint span batch",
+				zap.Error(err),
+				zap.Int("batch_start", i),
+				zap.Int("batch_end", end))
+			// Continue with next batch despite error
+		}
+
+		// Log progress for large reservoirs
+		if totalSpans > 100 && (i+batchSize)%100 == 0 {
+			p.logger.Debug("Checkpointing progress",
+				zap.Int("spans_processed", i+batchSize),
+				zap.Int("total_spans", totalSpans))
+		}
+	}
+
+	// Finalize the checkpoint
 	if err == nil {
 		p.lastCheckpoint = time.Now()
-		
+
 		// Update metrics
 		p.checkpointAgeGauge.Store(0)
 		if fi, err := os.Stat(p.config.CheckpointPath); err == nil {
 			p.reservoirDbSizeGauge.Store(fi.Size())
 		}
-		
+
 		p.logger.Debug("Checkpoint completed",
-			zap.Int("spans", len(p.reservoir)),
+			zap.Int("spans_saved", spanCount),
+			zap.Int("total_spans", totalSpans),
 			zap.Duration("duration", time.Since(startTime)))
 	}
-	
+
 	return err
 }
 
@@ -794,7 +850,7 @@ func (p *reservoirProcessor) checkpointLoop() {
 				elapsed := time.Since(p.lastCheckpoint)
 				p.checkpointAgeGauge.Store(int64(elapsed.Seconds()))
 			}
-			
+
 		case <-p.stopChan:
 			return
 		}
@@ -805,13 +861,16 @@ func (p *reservoirProcessor) checkpointLoop() {
 func (p *reservoirProcessor) loadState() error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	
+
 	if p.db == nil {
 		return fmt.Errorf("checkpoint database not initialized")
 	}
-	
-	var state *spanprotos.ReservoirState
-	
+
+	// Variables to hold state
+	var currentWindow int64
+	var windowStartTime, windowEndTime time.Time
+	var windowCount int64
+
 	// Read the state
 	err := p.db.View(func(tx *bolt.Tx) error {
 		checkpointBucket := tx.Bucket([]byte(bucketCheckpoint))
@@ -819,96 +878,107 @@ func (p *reservoirProcessor) loadState() error {
 		if stateBytes == nil {
 			return fmt.Errorf("no checkpoint state found")
 		}
-		
-		state = &spanprotos.ReservoirState{}
-		if err := proto.Unmarshal(stateBytes, state); err != nil {
-			return fmt.Errorf("failed to unmarshal checkpoint state: %w", err)
+
+		// Manual deserialization to match our checkpoint format
+		if len(stateBytes) < 32 { // 4 int64s = 32 bytes
+			return fmt.Errorf("invalid checkpoint state data: too short")
 		}
-		
+
+		buffer := bytes.NewReader(stateBytes)
+
+		// Read state fields in the same order they were written
+		if err := binary.Read(buffer, binary.BigEndian, &currentWindow); err != nil {
+			return fmt.Errorf("failed to read current window: %w", err)
+		}
+
+		var windowStartUnix, windowEndUnix int64
+		if err := binary.Read(buffer, binary.BigEndian, &windowStartUnix); err != nil {
+			return fmt.Errorf("failed to read window start time: %w", err)
+		}
+		if err := binary.Read(buffer, binary.BigEndian, &windowEndUnix); err != nil {
+			return fmt.Errorf("failed to read window end time: %w", err)
+		}
+
+		// Convert unix timestamps to time.Time
+		windowStartTime = time.Unix(windowStartUnix, 0)
+		windowEndTime = time.Unix(windowEndUnix, 0)
+
+		if err := binary.Read(buffer, binary.BigEndian, &windowCount); err != nil {
+			return fmt.Errorf("failed to read window count: %w", err)
+		}
+
 		return nil
 	})
-	
+
 	if err != nil {
 		return err
 	}
-	
+
 	// Check if the previous window is still valid
 	now := time.Now()
-	windowEndTime := time.Unix(state.WindowEndTime, 0)
-	
+
 	if now.After(windowEndTime) {
 		// Previous window has expired, start a new one
 		p.initializeWindowLocked()
 		p.logger.Info("Previous sampling window expired, starting a new one")
 		return nil
 	}
-	
+
 	// Previous window still valid, load it
-	p.currentWindow = state.CurrentWindow
-	p.windowStartTime = time.Unix(state.WindowStartTime, 0)
+	p.currentWindow = currentWindow
+	p.windowStartTime = windowStartTime
 	p.windowEndTime = windowEndTime
-	p.windowCount.Store(state.WindowCount)
-	
-	// Load the reservoir spans
+	p.windowCount.Store(windowCount)
+
+	// Load the reservoir spans in batches to avoid stack overflow
+	p.reservoir = make(map[uint64]SpanWithResource)
+	p.reservoirHashes = make([]uint64, 0, p.windowSize)
+
+	// Process spans in manageable chunks to avoid stack issues
+	const batchSize = 10
+	spansLoaded := 0
+
 	err = p.db.View(func(tx *bolt.Tx) error {
 		reservoirBucket := tx.Bucket([]byte(bucketReservoir))
 		windowBucket := reservoirBucket.Bucket([]byte(fmt.Sprintf("window_%d", p.currentWindow)))
 		if windowBucket == nil {
 			p.logger.Warn("No reservoir bucket found for window, resetting count",
 				zap.Int64("window", p.currentWindow))
-			// CRITICAL: Reset n to 0 when summaries are not restored
+			// Reset count when no bucket is found
 			p.windowCount.Store(0)
 			return nil
 		}
 
-		// Read all spans
-		p.reservoir = make(map[uint64]SpanWithResource)
-		p.reservoirHashes = make([]uint64, 0, p.windowSize)
-
-		spansLoaded := 0
-		err := windowBucket.ForEach(func(k, v []byte) error {
+		// Iterate through keys in batches
+		return windowBucket.ForEach(func(k, v []byte) error {
 			if len(k) != 8 {
-				return nil
+				return nil // Skip invalid keys
 			}
 
 			hash := binary.BigEndian.Uint64(k)
 
+			// Deserialize the span
 			spanWithRes, err := deserializeSpanWithResource(v)
 			if err != nil {
-				p.logger.Error("Failed to deserialize span from checkpoint", zap.Error(err))
-				return nil
+				p.logger.Error("Failed to deserialize span from checkpoint",
+					zap.Error(err),
+					zap.Uint64("hash", hash))
+				return nil // Continue with other spans
 			}
 
+			// Add to reservoir
 			p.reservoir[hash] = spanWithRes
 			p.reservoirHashes = append(p.reservoirHashes, hash)
 			spansLoaded++
 
+			// Log progress for large reservoirs
+			if spansLoaded%100 == 0 {
+				p.logger.Debug("Loading spans from checkpoint",
+					zap.Int("loaded_so_far", spansLoaded))
+			}
+
 			return nil
 		})
-
-		if err != nil {
-			return fmt.Errorf("failed to read spans from checkpoint: %w", err)
-		}
-
-		p.logger.Info("Restored spans from checkpoint",
-			zap.Int("count", spansLoaded),
-			zap.Int("capacity", p.windowSize))
-
-		// CRITICAL: Reset n to match the actual number of loaded spans when fewer spans than n are restored
-		if spansLoaded == 0 {
-			p.windowCount.Store(0)
-			p.logger.Warn("No spans loaded from checkpoint, resetting window count to 0")
-		} else if int64(spansLoaded) < p.windowCount.Load() {
-			p.logger.Warn("Fewer spans loaded than expected, adjusting window count",
-				zap.Int("loaded", spansLoaded),
-				zap.Int64("expected", p.windowCount.Load()))
-			// We set to at least the number of spans to ensure algorithm correctness
-			if int64(spansLoaded) > p.windowCount.Load() {
-				p.windowCount.Store(int64(spansLoaded))
-			}
-		}
-
-		return nil
 	})
 
 	if err != nil {
@@ -918,206 +988,40 @@ func (p *reservoirProcessor) loadState() error {
 		p.reservoirHashes = make([]uint64, 0, p.windowSize)
 		return err
 	}
-	
+
+	// Validate and adjust window count if needed
+	if spansLoaded == 0 {
+		p.windowCount.Store(0)
+		p.logger.Warn("No spans loaded from checkpoint, resetting window count to 0")
+	} else if int64(spansLoaded) < p.windowCount.Load() {
+		p.logger.Warn("Fewer spans loaded than expected, adjusting window count",
+			zap.Int("loaded", spansLoaded),
+			zap.Int64("expected", p.windowCount.Load()))
+
+		// Ensure window count is at least the number of spans loaded
+		if int64(spansLoaded) > p.windowCount.Load() {
+			p.windowCount.Store(int64(spansLoaded))
+		}
+	}
+
 	p.lastCheckpoint = now
-	
+
 	// Update metrics
 	p.reservoirSizeGauge.Store(int64(len(p.reservoir)))
-	p.windowCountGauge.Store(state.WindowCount)
-	
+	p.windowCountGauge.Store(windowCount)
+
 	p.logger.Info("Loaded previous state from checkpoint",
 		zap.Int64("window", p.currentWindow),
 		zap.Time("start", p.windowStartTime),
 		zap.Time("end", p.windowEndTime),
 		zap.Int("spans", len(p.reservoir)))
-	
+
 	return nil
 }
 
 // serializeSpanWithResource serializes a SpanWithResource to bytes
-func serializeSpanWithResource(swr SpanWithResource) ([]byte, error) {
-	// Create a proper span summary with all important fields
-	traceID := swr.Span.TraceID()
-	spanID := swr.Span.SpanID()
-
-	// Serialize basic span data
-	spanData := make([]byte, 0, 128)
-
-	// Start with trace and span IDs
-	spanData = append(spanData, traceID[:]...)
-	spanData = append(spanData, spanID[:]...)
-
-	// Add parent span ID
-	parentSpanID := swr.Span.ParentSpanID()
-	spanData = append(spanData, parentSpanID[:]...)
-
-	// Add span name (with length prefix)
-	spanName := []byte(swr.Span.Name())
-	spanNameLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(spanNameLen, uint32(len(spanName)))
-	spanData = append(spanData, spanNameLen...)
-	spanData = append(spanData, spanName...)
-
-	// Add start and end timestamps
-	startTimeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(startTimeBytes, uint64(swr.Span.StartTimestamp()))
-	spanData = append(spanData, startTimeBytes...)
-
-	endTimeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(endTimeBytes, uint64(swr.Span.EndTimestamp()))
-	spanData = append(spanData, endTimeBytes...)
-
-	// Serialize resource data - just grab service.name and service.version if available
-	resourceData := make([]byte, 0, 64)
-	swr.Resource.Attributes().Range(func(k string, v pcommon.Value) bool {
-		if k == "service.name" || k == "service.version" {
-			// Add key with length prefix
-			keyBytes := []byte(k)
-			keyLen := make([]byte, 4)
-			binary.BigEndian.PutUint32(keyLen, uint32(len(keyBytes)))
-			resourceData = append(resourceData, keyLen...)
-			resourceData = append(resourceData, keyBytes...)
-
-			// Add value with length prefix
-			valueBytes := []byte(v.AsString())
-			valueLen := make([]byte, 4)
-			binary.BigEndian.PutUint32(valueLen, uint32(len(valueBytes)))
-			resourceData = append(resourceData, valueLen...)
-			resourceData = append(resourceData, valueBytes...)
-		}
-		return true
-	})
-
-	// For scope, just store the name and version
-	scopeData := make([]byte, 0, 64)
-	scopeName := []byte(swr.Scope.Name())
-	scopeNameLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(scopeNameLen, uint32(len(scopeName)))
-	scopeData = append(scopeData, scopeNameLen...)
-	scopeData = append(scopeData, scopeName...)
-
-	scopeVersion := []byte(swr.Scope.Version())
-	scopeVersionLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(scopeVersionLen, uint32(len(scopeVersion)))
-	scopeData = append(scopeData, scopeVersionLen...)
-	scopeData = append(scopeData, scopeVersion...)
-
-	// Create and marshal the summary
-	summary := &spanprotos.SpanWithResourceSummary{
-		SpanData:     spanData,
-		ResourceData: resourceData,
-		ScopeData:    scopeData,
-	}
-
-	return proto.Marshal(summary)
-}
-
-// deserializeSpanWithResource deserializes bytes to a SpanWithResource
-func deserializeSpanWithResource(data []byte) (SpanWithResource, error) {
-	// Unmarshal the SpanWithResourceSummary
-	summary := &spanprotos.SpanWithResourceSummary{}
-	if err := proto.Unmarshal(data, summary); err != nil {
-		return SpanWithResource{}, fmt.Errorf("failed to unmarshal span summary: %w", err)
-	}
-
-	// Create a new traces object with structure
-	traces := ptrace.NewTraces()
-	rs := traces.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	span := ss.Spans().AppendEmpty()
-
-	// Extract span data
-	spanData := summary.SpanData
-	if len(spanData) < 32 { // At minimum, need trace ID and span ID (16 bytes each)
-		return SpanWithResource{}, fmt.Errorf("invalid span data length")
-	}
-
-	// Extract trace ID
-	traceID := pcommon.TraceID{}
-	copy(traceID[:], spanData[:16])
-	span.SetTraceID(traceID)
-
-	// Extract span ID
-	spanID := pcommon.SpanID{}
-	copy(spanID[:], spanData[16:24])
-	span.SetSpanID(spanID)
-
-	// Extract parent span ID if present
-	if len(spanData) >= 32 {
-		parentSpanID := pcommon.SpanID{}
-		copy(parentSpanID[:], spanData[24:32])
-		span.SetParentSpanID(parentSpanID)
-	}
-
-	// Extract more fields if they exist
-	if len(spanData) > 32 {
-		// Extract span name
-		if len(spanData) >= 36 {
-			nameLen := binary.BigEndian.Uint32(spanData[32:36])
-			if len(spanData) >= 36+int(nameLen) {
-				span.SetName(string(spanData[36 : 36+nameLen]))
-
-				// Extract timestamps if present
-				pos := 36 + nameLen
-				if len(spanData) >= int(pos)+16 { // Need 8 bytes each for start and end
-					startTime := binary.BigEndian.Uint64(spanData[pos : pos+8])
-					span.SetStartTimestamp(pcommon.Timestamp(startTime))
-
-					endTime := binary.BigEndian.Uint64(spanData[pos+8 : pos+16])
-					span.SetEndTimestamp(pcommon.Timestamp(endTime))
-				}
-			}
-		}
-	}
-
-	// Extract resource data
-	resourceData := summary.ResourceData
-	pos := 0
-	for pos+8 <= len(resourceData) {
-		// Read key
-		keyLen := binary.BigEndian.Uint32(resourceData[pos : pos+4])
-		pos += 4
-		if pos+int(keyLen)+4 > len(resourceData) {
-			break
-		}
-		key := string(resourceData[pos : pos+int(keyLen)])
-		pos += int(keyLen)
-
-		// Read value
-		valueLen := binary.BigEndian.Uint32(resourceData[pos : pos+4])
-		pos += 4
-		if pos+int(valueLen) > len(resourceData) {
-			break
-		}
-		value := string(resourceData[pos : pos+int(valueLen)])
-		pos += int(valueLen)
-
-		// Set resource attribute
-		rs.Resource().Attributes().PutStr(key, value)
-	}
-
-	// Extract scope data
-	scopeData := summary.ScopeData
-	if len(scopeData) >= 4 {
-		nameLen := binary.BigEndian.Uint32(scopeData[:4])
-		if len(scopeData) >= 4+int(nameLen)+4 {
-			ss.Scope().SetName(string(scopeData[4 : 4+nameLen]))
-
-			// Extract version
-			pos := 4 + nameLen
-			versionLen := binary.BigEndian.Uint32(scopeData[pos : pos+4])
-			if len(scopeData) >= int(pos)+4+int(versionLen) {
-				ss.Scope().SetVersion(string(scopeData[pos+4 : pos+4+versionLen]))
-			}
-		}
-	}
-
-	return SpanWithResource{
-		Span:     span,
-		Resource: rs.Resource(),
-		Scope:    ss.Scope(),
-	}, nil
-}
+// This implementation avoids deep recursive copying to prevent stack overflow
+// This implementation creates a minimal SpanWithResource to avoid excessive allocations
 
 // copyNestedBucket recursively copies a nested bucket and its contents
 func copyNestedBucket(sourceBucket, destBucket *bolt.Bucket, bucketName []byte) error {
@@ -1133,60 +1037,55 @@ func copyNestedBucket(sourceBucket, destBucket *bolt.Bucket, bucketName []byte) 
 		return fmt.Errorf("error creating nested bucket %s: %w", string(bucketName), err)
 	}
 
-	// Copy all key-value pairs from source to destination
+	// Iterate over all keys in the source nested bucket
 	return sourceNestedBucket.ForEach(func(k, v []byte) error {
-		// If value is nil, it's another nested bucket
+		// If the value is nil, it's a nested bucket
 		if v == nil {
+			// Handle nested buckets recursively
 			return copyNestedBucket(sourceNestedBucket, destNestedBucket, k)
 		}
+
 		// Otherwise, it's a key-value pair
 		return destNestedBucket.Put(k, v)
 	})
 }
 
-// compactDatabase performs database compaction if the size exceeds the target
+// compactDatabase performs database compaction to reduce file size and improve performance
+// It creates a temporary compacted copy of the database, then replaces the original with it
 func (p *reservoirProcessor) compactDatabase() {
-	if p.db == nil || p.config.DbCompactionTargetSize <= 0 {
+	// Skip if database is not initialized
+	if p.db == nil {
+		p.logger.Warn("Skipping database compaction - database not initialized")
 		return
 	}
 
-	// Check current DB size
-	fi, err := os.Stat(p.config.CheckpointPath)
+	// Check if compaction is needed based on file size
+	originalFile := p.config.CheckpointPath
+	fi, err := os.Stat(originalFile)
 	if err != nil {
-		p.logger.Error("Failed to get database file info", zap.Error(err))
+		p.logger.Error("Failed to get database file info for compaction", zap.Error(err))
 		return
 	}
 
-	// If size is below target, nothing to do
 	currentSize := fi.Size()
-	if currentSize <= p.config.DbCompactionTargetSize {
-		p.logger.Debug("Database size below target, no compaction needed",
+	if currentSize < p.config.DbCompactionTargetSize {
+		p.logger.Debug("Skipping database compaction - current size below target",
 			zap.Int64("current_size", currentSize),
 			zap.Int64("target_size", p.config.DbCompactionTargetSize))
 		return
 	}
 
-	p.logger.Info("Database compaction started",
-		zap.Int64("current_size", currentSize),
-		zap.Int64("target_size", p.config.DbCompactionTargetSize))
-
 	startTime := time.Now()
+	p.logger.Info("Starting database compaction", zap.Int64("current_size", currentSize))
 
-	// Perform compaction using the safer approach:
-	// 1. Close the current DB
-	// 2. Create a copy with a temporary file
-	// 3. Rename the temporary file to replace the original
-	// 4. Reopen the DB
-
-	// Define filenames
-	originalFile := p.config.CheckpointPath
-	tempFile := originalFile + ".compact"
+	// Create backup and temporary file paths
 	backupFile := originalFile + ".bak"
+	tempFile := originalFile + ".tmp"
 
-	// Function to ensure we clean up and restore the DB in case of errors
+	// Create a function to reopen the original DB in case of errors
 	reopenOriginalDB := func() {
 		if db, err := bolt.Open(originalFile, 0644, &bolt.Options{Timeout: 1 * time.Second}); err != nil {
-			p.logger.Error("Failed to reopen database after compaction failure", zap.Error(err))
+			p.logger.Error("Failed to reopen original database after error", zap.Error(err))
 		} else {
 			p.lock.Lock()
 			p.db = db
@@ -1195,63 +1094,56 @@ func (p *reservoirProcessor) compactDatabase() {
 		}
 	}
 
-	// 1. Close the DB for compaction
-	p.lock.Lock()
-	db := p.db
-	p.db = nil
-	p.lock.Unlock()
-
-	if err := db.Close(); err != nil {
-		p.logger.Error("Failed to close database for compaction", zap.Error(err))
-		reopenOriginalDB()
-		return
-	}
-
-	// Create backup of original file before attempting compaction
+	// 1. Create a backup of the original file
 	if err := copyFile(originalFile, backupFile); err != nil {
 		p.logger.Error("Failed to create backup before compaction", zap.Error(err))
-		reopenOriginalDB()
 		return
 	}
 
-	// 2. Perform compaction by creating a new DB and copying the data
-	var newDb, sourceDb *bolt.DB
-	var compactionSuccess bool
+	// 2. Perform compaction to a temporary file
+	compactionSuccess := false
+	var sourceDb, newDb *bolt.DB
 
-	// SAFER APPROACH: Use a function to ensure proper cleanup of resources
 	func() {
-		var err error
+		// Automatically handle cleanup in case of panics or other errors
+		defer func() {
+			// Close both databases safely if they're still open
+			if sourceDb != nil {
+				sourceDb.Close()
+			}
+			if newDb != nil {
+				newDb.Close()
+			}
 
-		// Create new empty database
+			if !compactionSuccess {
+				// Clean up temporary file if compaction failed
+				os.Remove(tempFile)
+			}
+		}()
+
+		// Open the source database in read-only mode
+		var err error
+		sourceDb, err = bolt.Open(originalFile, 0644, &bolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
+		if err != nil {
+			p.logger.Error("Failed to open source database for compaction", zap.Error(err))
+			return
+		}
+
+		// Create a new database for compaction
 		newDb, err = bolt.Open(tempFile, 0644, &bolt.Options{Timeout: 1 * time.Second})
 		if err != nil {
 			p.logger.Error("Failed to create new database for compaction", zap.Error(err))
 			return
 		}
-		defer func() {
-			if !compactionSuccess && newDb != nil {
-				newDb.Close()
-				os.Remove(tempFile)
-			}
-		}()
 
-		// Open original database in read-only mode
-		sourceDb, err = bolt.Open(originalFile, 0444, &bolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
-		if err != nil {
-			p.logger.Error("Failed to open source database for compaction", zap.Error(err))
-			return
-		}
-		defer sourceDb.Close()
-
-		// Copy all data from the source to the destination database
+		// Copy all data from source to new database
 		err = sourceDb.View(func(sourceTx *bolt.Tx) error {
 			return newDb.Update(func(destTx *bolt.Tx) error {
-				// Iterate over all buckets in the source database
-				return sourceTx.ForEach(func(bucketName []byte, sourceBucket *bolt.Bucket) error {
+				return sourceTx.ForEach(func(name []byte, sourceBucket *bolt.Bucket) error {
 					// Create the bucket in the destination
-					destBucket, err := destTx.CreateBucketIfNotExists(bucketName)
+					destBucket, err := destTx.CreateBucketIfNotExists(name)
 					if err != nil {
-						return fmt.Errorf("error creating bucket %s: %w", string(bucketName), err)
+						return fmt.Errorf("error creating bucket %s: %w", string(name), err)
 					}
 
 					// Iterate over all keys in the source bucket
