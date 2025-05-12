@@ -1,0 +1,37 @@
+services:
+  # New Relic Infrastructure Agent
+  newrelic-infra:
+    image: newrelic/infrastructure:latest
+    container_name: newrelic-infra
+    network_mode: host
+    pid: host
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - NRIA_LICENSE_KEY=${NR_LICENSE_KEY}
+      - NRIA_DISPLAY_NAME=${HOSTNAME}-infra
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/host/sys:ro
+      - /proc:/host/proc:ro
+      - /etc:/host/etc:ro
+      - /var/log:/host/var/log:ro
+      - ./newrelic/newrelic-infra.yml:/etc/newrelic-infra.yml:ro
+
+  # NRDOT Collector for host/process metrics
+  nrdot-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: nrdot-collector
+    restart: unless-stopped
+    environment:
+      - NR_API_KEY=${NR_LICENSE_KEY}
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - ./nrdot/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: --config=/etc/otelcol-contrib/config.yaml
+    depends_on:
+      - newrelic-infra
+    # For process metrics, needs access to host's processes
+    pid: host

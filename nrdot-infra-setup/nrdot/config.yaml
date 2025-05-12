@@ -1,0 +1,97 @@
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.time:
+            enabled: true
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.memory.usage:
+            enabled: true
+          system.memory.utilization:
+            enabled: true
+      disk:
+        metrics:
+          system.disk.io:
+            enabled: true
+          system.disk.operations:
+            enabled: true
+          system.disk.io_time:
+            enabled: true
+          system.disk.operation_time:
+            enabled: true
+      filesystem:
+        metrics:
+          system.filesystem.usage:
+            enabled: true
+          system.filesystem.utilization:
+            enabled: true
+      network:
+        metrics:
+          system.network.packets:
+            enabled: true
+          system.network.io:
+            enabled: true
+          system.network.errors:
+            enabled: true
+      paging:
+        metrics:
+          system.paging.usage:
+            enabled: true
+          system.paging.utilization:
+            enabled: true
+          system.paging.faults:
+            enabled: true
+          system.paging.operations:
+            enabled: true
+      load:
+      processes:
+        metrics:
+          system.processes.created:
+            enabled: true
+          system.processes.count:
+            enabled: true
+
+processors:
+  batch:
+    send_batch_max_size: 1000
+    send_batch_size: 1000
+    timeout: 10s
+  
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
+  resource:
+    attributes:
+      # Set any extra default attributes here
+      - key: service.name
+        value: "host-metrics"
+        action: upsert
+      - key: host.name
+        from_attribute: host.name
+        action: upsert
+
+exporters:
+  otlp:
+    endpoint: "https://otlp.nr-data.net:4317"
+    headers:
+      api-key: ${NR_API_KEY}
+    tls:
+      insecure: false
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [batch, resourcedetection, resource]
+      exporters: [otlp]
+  
+  telemetry:
+    logs:
+      level: "info"
