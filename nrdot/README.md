@@ -1,69 +1,93 @@
-# Trace-Aware Reservoir Sampling Integration with NRDOT
+# Trace-Aware Reservoir Sampling for NR-DOT
 
-This directory contains resources for integrating the trace-aware reservoir sampling processor with the New Relic Distribution of OpenTelemetry (NRDOT).
+This directory contains resources for integrating the trace-aware reservoir sampling processor with the New Relic Distribution of OpenTelemetry (NR-DOT).
 
 ## Quick Start
 
-To integrate the trace-aware reservoir sampler with NRDOT:
+```bash
+# Clone the repository
+git clone https://github.com/deepaucksharma-nr/trace-aware-reservoir-otel.git
+cd trace-aware-reservoir-otel
 
-1. Make the build script executable and run it:
-   ```bash
-   chmod +x build.sh
-   ./build.sh
-   ```
+# Make the build script executable and run it
+chmod +x nrdot/build_nrdot.sh
+./nrdot/build_nrdot.sh
 
-2. Push the resulting image to your container registry:
-   ```bash
-   docker push your-registry/nrdot-reservoir-sampler:v0.1.0
-   ```
+# Push the image to your registry (update with your registry details)
+docker push ghcr.io/your-org/nrdot-reservoir:v0.1.0
 
-3. Deploy using Helm with the provided values file:
-   ```bash
-   # Update values-reservoir.yaml with your registry and settings
-   helm upgrade --install nrdot newrelic/nrdot-collector \
-     --namespace observability \
-     --create-namespace \
-     --values values-reservoir.yaml \
-     --set licenseKey=YOUR_NEW_RELIC_LICENSE_KEY
-   ```
+# Deploy using Helm
+helm upgrade --install nr-otel newrelic/nrdot-collector \
+  --namespace observability \
+  --create-namespace \
+  --values nrdot/values.reservoir.yaml \
+  --set licenseKey=YOUR_NEW_RELIC_LICENSE_KEY
 
-## Files in this Directory
+# Validate the deployment
+chmod +x nrdot/validate_deployment.sh
+./nrdot/validate_deployment.sh
+```
 
-- **`INTEGRATION_GUIDE.md`**: Detailed guide for integrating with NRDOT
-- **`distribution.yaml`**: NRDOT builder configuration including the reservoir sampler
-- **`values-reservoir.yaml`**: Helm chart values for deploying with the reservoir sampler
-- **`build.sh`**: Automated build script for creating a custom NRDOT image
+## What's Included
 
-## Requirements
+- **`NRDOT_INTEGRATION.md`**: Comprehensive integration guide with step-by-step instructions
+- **`build_nrdot.sh`**: Automated build script for creating a custom NR-DOT image
+- **`values.reservoir.yaml`**: NR-DOT-specific Helm values for deployment
+- **`distribution.yaml`**: Builder configuration for adding the reservoir sampler to NR-DOT
+- **`validate_deployment.sh`**: Script to verify successful deployment
 
-- Go 1.21 or later
-- Docker or Podman
-- Access to a container registry
-- New Relic account with license key
+## Integration Process
 
-## Configuration Options
+The integration follows the official NR-DOT build process:
 
-The `values-reservoir.yaml` file includes comprehensive configuration for the reservoir sampler in Kubernetes environments, including:
+1. **Package & Version the Processor**: Ensure the processor is tagged properly
+2. **Fork the NR-DOT Repository**: Create a fork for your custom build
+3. **Update the Distribution Manifest**: Add the reservoir sampler to the component list
+4. **Add the Module Dependency**: Include the processor in the Go module
+5. **Build the Custom Distribution**: Generate the custom NR-DOT binary
+6. **Create and Push the Docker Image**: Build the container image
+7. **Deploy with Helm**: Use the provided Helm values for Kubernetes deployment
 
-- Persistent storage setup
-- Resource allocation
-- Processor configuration
-- Pipeline setup
-- High availability settings
+For detailed instructions, see [NRDOT_INTEGRATION.md](./NRDOT_INTEGRATION.md).
 
-Modify these settings based on your specific requirements.
+## Key Requirements
 
-## Persistent Storage
+### 1. Persistence Configuration
 
-The reservoir sampler requires persistent storage for checkpointing. The provided configuration:
+The reservoir sampler requires persistent storage for its BoltDB checkpoint file:
 
-- Enables persistent volume claims in the Helm chart
-- Mounts the volume at `/var/otelpersist`
-- Configures the reservoir sampler to store checkpoints at `/var/otelpersist/reservoir.db`
+```yaml
+# In values.reservoir.yaml
+persistence:
+  enabled: true  # MUST be true
+  size: 1Gi
+```
 
-## Pipeline Configuration
+The checkpoint path MUST be within the NR-DOT standard mount path:
 
-The reservoir sampler is positioned after batch processing, but before export:
+```yaml
+processors:
+  reservoir_sampler:
+    checkpoint_path: "/var/otelpersist/reservoir.db"
+```
+
+### 2. Extension Dependencies
+
+The `filestorageextension` MUST be included in the build and enabled in the service:
+
+```yaml
+# In distribution.yaml
+extensions:
+  - github.com/open-telemetry/opentelemetry-collector-contrib/extension/filestorageextension
+
+# In values.reservoir.yaml
+service:
+  extensions: [health_check, pprof, memory_ballast, file_storage]
+```
+
+### 3. Pipeline Configuration
+
+The reservoir sampler should be placed AFTER batch processing but BEFORE export:
 
 ```yaml
 pipelines:
@@ -73,24 +97,36 @@ pipelines:
     exporters: [otlphttp/newrelic]
 ```
 
-This ensures optimal sampling behavior.
+## Validation
 
-## Monitoring
+After deployment, verify the integration with:
 
-To monitor the reservoir sampler performance, set up dashboards in Prometheus and/or New Relic that track these key metrics:
+```bash
+# Get the pod name
+POD=$(kubectl get pods -n observability -l app.kubernetes.io/name=nrdot-collector -o jsonpath='{.items[0].metadata.name}')
 
-- `reservoir_sampler.reservoir_size`
-- `reservoir_sampler.window_count`
-- `reservoir_sampler.checkpoint_age`
-- `reservoir_sampler.trace_buffer_size`
-- `reservoir_sampler.lru_evictions`
+# Check if processor is in the config
+kubectl exec -n observability $POD -- grep reservoir_sampler /etc/otelcol-config.yaml
 
-## Troubleshooting
+# Check for reservoir metrics
+kubectl exec -n observability $POD -- curl -s http://localhost:8888/metrics | grep pte_reservoir
 
-See `INTEGRATION_GUIDE.md` for detailed troubleshooting steps and common issues.
+# Verify the checkpoint file exists (after first checkpoint interval)
+kubectl exec -n observability $POD -- ls -l /var/otelpersist/ | grep reservoir.db
+```
+
+## Key Metrics to Monitor
+
+- `pte_reservoir_traces_in_reservoir_count`: Current traces in reservoir
+- `pte_reservoir_checkpoint_age_seconds`: Time since last checkpoint
+- `pte_reservoir_db_size_bytes`: Size of the checkpoint file
+- `pte_reservoir_lru_evictions_total`: Trace buffer evictions (high = increase buffer)
+- `pte_reservoir_checkpoint_errors_total`: Failed checkpoints (should be 0)
+- `pte_reservoir_restore_success_total`: Successful restorations after restart
 
 ## References
 
-- [New Relic Distribution of OpenTelemetry](https://github.com/newrelic/opentelemetry-collector-releases)
-- [OpenTelemetry Collector Builder](https://github.com/open-telemetry/opentelemetry-collector/tree/main/cmd/builder)
-- [New Relic NRDOT Helm Chart](https://github.com/newrelic/helm-charts/tree/master/charts/nrdot-collector)
+- [OpenTelemetry Collector Builder](https://github.com/open-telemetry/opentelemetry-collector/blob/main/cmd/builder/README.md)
+- [New Relic OpenTelemetry Documentation](https://docs.newrelic.com/docs/more-integrations/open-source-telemetry-integrations/opentelemetry/opentelemetry-setup/)
+- [NR-DOT Helm Chart](https://github.com/newrelic/helm-charts/tree/master/charts/nrdot-collector)
+- [NR-DOT Releases Repository](https://github.com/newrelic/opentelemetry-collector-releases)
