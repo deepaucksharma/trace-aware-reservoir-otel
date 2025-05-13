@@ -1,0 +1,37 @@
+# ─── Stage 1: build NR-DOT with your processor ──────────────────────────────────
+FROM golang:1.21 AS builder
+
+ARG RS_VERSION=v0.1.0          # version of your reservoir sampler
+
+RUN apt-get update && apt-get install -y make git
+
+# clone & patch once - using main branch as the tag doesn't exist
+RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
+WORKDIR /nrdot
+
+# First check the actual directory structure
+RUN find . -name "manifest.yaml" -type f
+
+# Add our processor to the k8s & host manifests - more cautious approach
+RUN set -ex && \
+    if [ -f "distributions/nrdot-collector-k8s/manifest.yaml" ]; then \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-k8s/manifest.yaml; \
+    fi && \
+    if [ -f "distributions/nrdot-collector-host/manifest.yaml" ]; then \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-host/manifest.yaml; \
+    fi
+
+RUN make dist          # produces _dist/nrdot/otelcol-nrdot
+
+# ─── Stage 2: slim runtime image ────────────────────────────────────────────────
+FROM alpine:3.19
+
+RUN addgroup -g 10001 otel && adduser -D -G otel -u 10001 otel
+COPY --from=builder /nrdot/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
+RUN mkdir -p /var/otelpersist/badger && chown -R otel:otel /var/otelpersist
+
+USER otel
+ENTRYPOINT ["/otelcol-nrdot"]
+CMD ["--config=/etc/otelcol-nrdot/config.yaml"]
+
+EXPOSE 4317 4318 8888
