@@ -9,12 +9,7 @@ RUN apt-get update && apt-get install -y make git
 RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
 WORKDIR /nrdot
 
-# Check the repository structure
-RUN find . -name "manifest.yaml" -type f && \
-    find . -name "Makefile" -type f && \
-    cat $(find . -name "Makefile" -type f | head -1) | grep -i "dist"
-
-# Add our processor to the k8s & host manifests - more cautious approach
+# Add our processor to the k8s & host manifests
 RUN set -ex && \
     if [ -f "distributions/nrdot-collector-k8s/manifest.yaml" ]; then \
         echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-k8s/manifest.yaml; \
@@ -23,18 +18,28 @@ RUN set -ex && \
         echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-host/manifest.yaml; \
     fi
 
-# Look for available make targets
-RUN if [ -f "Makefile" ]; then \
-        make help || make --help || echo "No help target"; \
-        make -n || echo "No default target"; \
-        ls -la _build/collector-builder || echo "Builder not found"; \
-    fi
+# Install the builder tool first
+RUN set -ex && \
+    mkdir -p /root/bin && \
+    CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" go.opentelemetry.io/collector/cmd/builder@v0.125.0 && \
+    mv $(go env GOPATH)/bin/builder /root/bin/ocb
+
+# Run the build script with the correct parameters
+RUN set -ex && \
+    ./scripts/build.sh -d "nrdot-collector-k8s" -b /root/bin/ocb && \
+    find /nrdot -name "otelcol-*" -type f | xargs ls -la
+
+# Find where the built binary is located
+RUN find / -name "otelcol-*" -type f 2>/dev/null | sort
 
 # ─── Stage 2: slim runtime image ────────────────────────────────────────────────
 FROM alpine:3.19
 
 RUN addgroup -g 10001 otel && adduser -D -G otel -u 10001 otel
-COPY --from=builder /nrdot/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
+
+# Correct path will be determined after the build - this is a placeholder
+COPY --from=builder /nrdot/distributions/nrdot-collector-k8s/_build/otelcol-nrdot-collector-k8s /otelcol-nrdot
+
 RUN mkdir -p /var/otelpersist/badger && chown -R otel:otel /var/otelpersist
 
 USER otel
