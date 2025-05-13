@@ -1,5 +1,5 @@
 # ─── Stage 1: build NR-DOT with your processor ──────────────────────────────────
-FROM golang:1.21 AS builder
+FROM golang:1.23 AS builder
 
 ARG RS_VERSION=v0.1.0          # version of your reservoir sampler
 
