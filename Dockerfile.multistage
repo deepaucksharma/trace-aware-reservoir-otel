@@ -1,14 +1,12 @@
 # ─── Stage 1: build NR-DOT with your processor ──────────────────────────────────
 FROM golang:1.21 AS builder
 
-ARG NRDOT_VERSION=v0.91.0      # pin same as go.opentelemetry.io/collector
 ARG RS_VERSION=v0.1.0          # version of your reservoir sampler
 
 RUN apt-get update && apt-get install -y make git
 
-# clone & patch once
-RUN git clone --branch "${NRDOT_VERSION}" \
-      https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
+# clone & patch once - using main branch as the tag doesn't exist
+RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
 WORKDIR /nrdot
 
 # add your processor to the k8s & host manifests
