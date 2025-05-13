@@ -21,3 +21,8 @@ collector:
       batch:
         send_batch_size: 2048 # Larger batch size
         timeout: 1s           # Short timeout for quick sending
+    service:
+      pipelines:
+        traces:
+          # Ensure the resource processor is included in the right order
+          processors: [memory_limiter, batch, reservoir_sampler, resource/add-profile]

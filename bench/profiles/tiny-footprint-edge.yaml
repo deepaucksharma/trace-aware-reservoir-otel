@@ -29,4 +29,9 @@ collector:
         # db_compaction_schedule_cron: "" # Disable automatic compaction or set less frequently
       batch:
         timeout: 10s             # Longer batch timeout for edge, less frequent sends
-        send_batch_size: 512   # Smaller batches
+        send_batch_size: 512     # Smaller batches
+    service:
+      pipelines:
+        traces:
+          # Ensure the resource processor is included in the right order
+          processors: [memory_limiter, batch, reservoir_sampler, resource/add-profile]

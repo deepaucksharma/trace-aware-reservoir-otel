@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload KPI Results CSV
         if: always() # Always run this step to upload results, even if previous steps fail
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: kpi-results
           path: /tmp/kpi_*_*.csv # Use wildcard for all profile results

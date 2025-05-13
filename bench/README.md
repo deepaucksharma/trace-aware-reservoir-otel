@@ -1,60 +1,43 @@
-# Benchmark Implementation
+# Trace-Aware Reservoir Benchmark
 
-This document explains the changes made to implement the end-to-end benchmark guide for the Trace-Aware Reservoir Sampler project.
+This directory contains the benchmark harness for the Trace-Aware Reservoir Sampler. It provides tools for performance testing, comparison, and validation of different sampler configurations.
 
-## Changes Made
+## Overview
 
-1. **Added Benchmark Implementation Guide**
-   - Created `docs/benchmark-implementation.md` with comprehensive guide
+The benchmark system uses a fan-out topology where identical traces are sent to multiple collector instances, each with a different configuration profile. This ensures fair comparison across profiles since they all receive exactly the same traffic.
 
-2. **Created Fan-Out Collector Configuration**
-   - Added `bench/fanout/values.yaml` for the tee collector that duplicates traffic to all profiles
+## Key Components
 
-3. **Updated Bench Makefile**
-   - Modified variable definitions and parameters to support fan-out topology
-   - Added `bench-all` target to run all profiles against the same load
-   - Added `clean_all` target to clean up all benchmark resources
-   - Updated help text with new options
+- **profiles/**: YAML files with different performance-oriented configurations
+- **kpis/**: Success criteria for each profile
+- **fanout/**: Fan-out collector configuration that duplicates traffic
+- **pte-kpi/**: Go tool that evaluates metrics against KPI criteria
+- **Makefile**: Automation for benchmark deployment and evaluation
 
-4. **Updated GitHub Workflow**
-   - Modified `.github/workflows/bench.yml` to use the new fan-out topology
-   - Removed matrix strategy as all profiles now run in parallel with the same load
-   - Added support for uploading all KPI results
-   - Improved cleanup process
+## Quick Start
 
-5. **Enhanced Profile Configurations**
-   - Added resource processor to add benchmark profile attribution for New Relic
-   - Ensures each trace copy in New Relic is tagged with its profile
+```bash
+# From repo root:
+export IMAGE_TAG=bench
+make image VERSION=$IMAGE_TAG
+kind create cluster --config kind-config.yaml
+kind load docker-image ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG
 
-## Using the New Benchmark System
+# Run all benchmark profiles:
+make -C bench bench-all IMAGE_TAG=$IMAGE_TAG DURATION=10m
+```
 
-1. Build your image (from repository root):
-   ```bash
-   export IMAGE_TAG=bench
-   make image VERSION=$IMAGE_TAG
-   kind create cluster --config kind-config.yaml
-   kind load docker-image ghcr.io/<you>/nrdot-reservoir:$IMAGE_TAG
-   ```
+## Available Profiles
 
-2. Deploy the fan-out collector:
-   ```bash
-   helm upgrade --install trace-fanout oci://open-telemetry/opentelemetry-collector \
-     -n fanout --create-namespace \
-     -f bench/fanout/values.yaml \
-     --set image.tag=v0.91.0
-   ```
+- **max-throughput-traces**: Optimized for maximum trace throughput
+- **tiny-footprint-edge**: Optimized for minimal resource usage in edge environments
 
-3. Run all benchmark profiles against the same load:
-   ```bash
-   make -C bench bench-all \
-       IMAGE_TAG=$IMAGE_TAG \
-       DURATION=10m \
-       NEW_RELIC_KEY=$NEW_RELIC_KEY
-   ```
+## Adding New Profiles
 
-4. Clean up all resources:
-   ```bash
-   make -C bench clean_all
-   ```
+1. Create a new YAML file in `profiles/`
+2. Define corresponding KPIs in `kpis/`
+3. Add endpoint to `fanout/values.yaml`
 
-For more details, refer to the `docs/benchmark-implementation.md` file.
+## For More Information
+
+See the detailed [Benchmark Implementation Guide](../docs/benchmark-implementation.md) for complete documentation.

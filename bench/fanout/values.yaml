@@ -14,11 +14,11 @@ config:
 
   exporters:
     otlp/max-throughput-traces:
-      endpoint: collector-max-throughput-traces.bench-max-throughput-traces.svc.cluster.local:4317
+      endpoint: collector-max-throughput-traces-collector.bench-max-throughput-traces.svc.cluster.local:4317
       tls:
         insecure: true
     otlp/tiny-footprint-edge:
-      endpoint: collector-tiny-footprint-edge.bench-tiny-footprint-edge.svc.cluster.local:4317
+      endpoint: collector-tiny-footprint-edge-collector.bench-tiny-footprint-edge.svc.cluster.local:4317
       tls:
         insecure: true
     # Add more profiles as needed
