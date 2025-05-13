@@ -2,38 +2,101 @@
 
 A trace-aware reservoir sampling implementation for OpenTelemetry collector. This processor intelligently samples traces based on their importance, maintaining a representative sample even under high load.
 
-## Project Structure
+## Overview
 
-This repository contains two main components:
+This repository implements a statistically-sound reservoir sampling processor for the OpenTelemetry Collector that:
 
-- **Processor Implementation**: An OpenTelemetry processor implementing trace-aware reservoir sampling in Go
-- **NR-DOT Integration**: Deployment with New Relic OpenTelemetry Distribution (NR-DOT)
+- Maintains an unbiased, representative sample even with unbounded data streams
+- Preserves complete traces when operating in trace-aware mode
+- Persists the reservoir state using Badger database for durability across restarts
+- Integrates seamlessly with the New Relic OpenTelemetry Distribution (NR-DOT)
 
-## Getting Started
+## Quick Start
 
-### New Relic NR-DOT Integration
-
-The deployment method uses the New Relic OpenTelemetry Distribution (NR-DOT) with Helm:
+### 1. Build the Docker Image
 
 ```bash
-# See detailed instructions in the integration guide
-helm install otel-reservoir newrelic/nri-bundle -f values.reservoir.yaml
+./build.sh
 ```
 
-See [NR-DOT Integration Guide](NRDOT-INTEGRATION.md) for detailed instructions.
+### 2. Deploy to Kubernetes
 
-## Architecture
+```bash
+export NEW_RELIC_KEY="your_license_key_here"
+./deploy-k8s.sh
+```
 
-The trace-aware reservoir sampling processor maintains a statistically representative sample of traces while prioritizing those of greater importance. It uses windowed reservoirs and configurable trace selection strategies.
+### 3. Verify the Deployment
 
-Key features:
+```bash
+./test-integration.sh
+```
 
-- Reservoir sampling using Algorithm R for statistically representative sampling
-- Trace-aware mode to preserve complete traces
-- Persistent storage of reservoir state for durability across restarts
-- Metrics for monitoring performance and behavior
-- Configurable window sizes and sampling rates
-- Badger v3 database for efficient persistence
+## Implementation Details
+
+The processor uses Algorithm R for reservoir sampling with these key characteristics:
+
+- **Windowed Sampling**: Maintain separate reservoirs for configurable time windows
+- **Trace Awareness**: Buffer and handle spans with the same trace ID together
+- **Persistence**: Store reservoir state in Badger DB with configurable checkpointing
+- **Metrics**: Expose performance and behavior metrics via Prometheus
+
+### Architecture
+
+```
+┌─────────────┐     ┌───────────────────┐     ┌─────────────┐
+│ OTLP Input  │────▶│ Reservoir Sampler │────▶│ OTLP Output │
+└─────────────┘     └───────────────────┘     └─────────────┘
+                             │
+                             ▼
+                     ┌───────────────┐
+                     │ Badger DB     │
+                     │ Persistence   │
+                     └───────────────┘
+```
+
+## Documentation
+
+- [Implementation Guide](IMPLEMENTATION-GUIDE.md) - Step-by-step guide for building and deploying
+- [Implementation Status](IMPLEMENTATION-STATUS.md) - Current status and next steps
+- [NR-DOT Integration](NRDOT-INTEGRATION.md) - Details on the New Relic OpenTelemetry Distribution integration
+
+## Configuration
+
+Sample configuration in your collector config.yaml:
+
+```yaml
+processors:
+  reservoir_sampler:
+    size_k: 5000                         # Reservoir size (in thousands of traces)
+    window_duration: 60s                 # Time window for each reservoir
+    checkpoint_path: /var/otelpersist/badger  # Persistence location
+    checkpoint_interval: 10s             # How often to save state
+    trace_aware: true                    # Buffer spans from the same trace
+    trace_buffer_timeout: 30s            # How long to wait for spans from same trace
+    trace_buffer_max_size: 100000        # Maximum buffer size
+    db_compaction_schedule_cron: "0 2 * * *"  # When to compact the database
+    db_compaction_target_size: 134217728 # Target size for compaction (128 MiB)
+```
+
+## Development
+
+### Prerequisites
+
+- Docker
+- Kubernetes cluster (e.g., Docker Desktop with Kubernetes enabled)
+- Helm (for Kubernetes deployment)
+- New Relic license key
+
+### Build and Test Locally
+
+```bash
+# Run tests
+go test ./...
+
+# Build and run
+./build.sh
+```
 
 ## License
 

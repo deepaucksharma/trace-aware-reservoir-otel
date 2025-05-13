@@ -1,38 +1,32 @@
-FROM golang:1.21 as builder
+# ─── Stage 1: build NR-DOT with your processor ──────────────────────────────────
+FROM golang:1.21 AS builder
 
-# Clone NR-DOT repository
-RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /build && \
-    cd /build && \
-    git checkout -b feat/reservoir-sampler
+ARG NRDOT_VERSION=v0.91.0      # pin same as go.opentelemetry.io/collector
+ARG RS_VERSION=v0.1.0          # version of your reservoir sampler
 
-# Update manifest files
-COPY manifest.yaml.patch /tmp/
-RUN echo 'processors:\n  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.1.0' > /tmp/manifest.yaml.patch && \
-    cd /build && \
-    grep -n "processors:" distributions/nrdot-collector-k8s/manifest.yaml | head -1 | cut -d':' -f1 > /tmp/line_number && \
-    line=$(<'/tmp/line_number') && \
-    sed -i "${line}r /tmp/manifest.yaml.patch" distributions/nrdot-collector-k8s/manifest.yaml
+RUN apt-get update && apt-get install -y make git
 
-# Build the distribution
-WORKDIR /build
-RUN apt-get update && apt-get install -y make && \
-    make dist
+# clone & patch once
+RUN git clone --branch "${NRDOT_VERSION}" \
+      https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
+WORKDIR /nrdot
 
+# add your processor to the k8s & host manifests
+RUN for m in distributions/nrdot-collector-{host,k8s}/manifest.yaml ; do \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" \
+        >> "$m" ; \
+    done
+
+RUN make dist          # produces _dist/nrdot/otelcol-nrdot
+
+# ─── Stage 2: slim runtime image ────────────────────────────────────────────────
 FROM alpine:3.19
 
-# Copy the collector binary from the builder
-COPY --from=builder /build/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
-
-# Create a non-root user to run the collector
-RUN addgroup -g 10001 otel && \
-    adduser -D -G otel -u 10001 otel
-
-# Set up directories for checkpoints and data
-RUN mkdir -p /var/otelpersist/badger && \
-    chown -R otel:otel /var/otelpersist
+RUN addgroup -g 10001 otel && adduser -D -G otel -u 10001 otel
+COPY --from=builder /nrdot/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
+RUN mkdir -p /var/otelpersist/badger && chown -R otel:otel /var/otelpersist
 
 USER otel
-
 ENTRYPOINT ["/otelcol-nrdot"]
 CMD ["--config=/etc/otelcol-nrdot/config.yaml"]
 

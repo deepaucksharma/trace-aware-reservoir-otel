@@ -1,40 +1,48 @@
 #!/bin/bash
-# Integration testing script for the reservoir sampler
+# Integration test script for trace-aware-reservoir-otel
 
 set -e
 
-echo "=== Trace-Aware Reservoir Sampler Integration Test ==="
+NAMESPACE="otel"
 
-# Step 1: Check if the collector is running
-echo "Checking collector status..."
-kubectl get pods -n otel | grep otel-collector
+echo "Running integration tests for trace-aware-reservoir-otel..."
 
-# Step 2: Port-forward the metrics endpoint
-echo "Setting up port-forward to metrics endpoint..."
-kubectl port-forward -n otel svc/otel-collector 8888:8888 &
+# Test 1: Check if the collector pod is running
+echo "Test 1: Checking if the collector pod is running..."
+PODS=$(kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/component=opentelemetry-collector -o jsonpath='{.items[*].status.phase}')
+if [[ "$PODS" == *"Running"* ]]; then
+  echo "✅ Collector pod is running"
+else
+  echo "❌ Collector pod is not running"
+  exit 1
+fi
+
+# Test 2: Check if the reservoir_sampler processor is registered
+echo "Test 2: Checking if the reservoir_sampler processor is registered..."
+# Port-forward in the background
+kubectl port-forward -n ${NAMESPACE} svc/otel-collector 8888:8888 &
 PF_PID=$!
+sleep 5  # Give it time to establish the port-forwarding
 
-# Give it a moment to establish the connection
-sleep 3
+# Check metrics
+METRICS=$(curl -s http://localhost:8888/metrics | grep reservoir_sampler)
+kill $PF_PID  # Kill the port-forwarding process
 
-# Step 3: Check if the processor is registered
-echo "Checking if reservoir_sampler is registered..."
-curl -s http://localhost:8888/metrics | grep "processor_reservoir_sampler"
+if [[ -n "$METRICS" ]]; then
+  echo "✅ reservoir_sampler processor is registered"
+else
+  echo "❌ reservoir_sampler processor is not registered"
+  exit 1
+fi
 
-# Step 4: Check reservoir metrics
-echo "Checking reservoir metrics..."
-curl -s http://localhost:8888/metrics | grep "reservoir_sampler"
+# Test 3: Check if the Badger database is accessible
+echo "Test 3: Checking if the Badger database is accessible..."
+DB_CHECK=$(kubectl exec -n ${NAMESPACE} -l app.kubernetes.io/component=opentelemetry-collector -- ls -la /var/otelpersist/badger 2>/dev/null || echo "Failed")
+if [[ "$DB_CHECK" != "Failed" ]]; then
+  echo "✅ Badger database is accessible"
+else
+  echo "❌ Badger database is not accessible"
+  exit 1
+fi
 
-# Step 5: Check logs for window rollovers
-echo "Checking logs for window rollovers..."
-kubectl logs -n otel deployment/otel-collector | grep "Started new sampling window"
-
-# Cleanup
-kill $PF_PID
-wait $PF_PID 2>/dev/null || true
-
-echo "=== Test Complete ==="
-echo "For detailed testing:"
-echo "1. Use 'kubectl port-forward -n otel svc/otel-collector 8888:8888' to access metrics"
-echo "2. Send sample traces to 'localhost:4317' using the OTLP protocol"
-echo "3. Check 'curl http://localhost:8888/metrics | grep reservoir_sampler' for detailed metrics"
+echo "All integration tests passed! ✅"

@@ -1,46 +1,60 @@
 #!/bin/bash
-# Updated deployment script for trace-aware-reservoir-otel with NR-DOT
+# Deployment script for trace-aware-reservoir-otel on Kubernetes
 
 set -e
 
 # Configuration 
-# UPDATE THESE VALUES
-export REGISTRY="ghcr.io"
-export ORG="deepaucksharma"  # GitHub username or organization
-export IMAGE_NAME="nrdot-reservoir"
-export VERSION="v0.1.0"
-export LICENSE_KEY="your_license_key_here"  # Replace with your actual New Relic license key
-export CLUSTER_NAME="reservoir-demo"
+REGISTRY="ghcr.io"
+ORG="deepaucksharma"  # GitHub username or organization
+IMAGE_NAME="nrdot-reservoir"
+VERSION="v0.1.0"
+LICENSE_KEY="${NEW_RELIC_KEY:-your_license_key_here}"  # Use env var if available
+CLUSTER_NAME="reservoir-demo"
+NAMESPACE="otel"
 
-export IMAGE="${REGISTRY}/${ORG}/${IMAGE_NAME}:${VERSION}"
+# Check if Helm is installed
+if ! command -v helm &> /dev/null; then
+    echo "Helm is not installed. Please install Helm first."
+    echo "Visit https://helm.sh/docs/intro/install/ for installation instructions."
+    exit 1
+fi
 
-# Step 1: Deploy to Docker Desktop Kubernetes
-echo "Deploying to Kubernetes..."
-
-# Create namespace
-kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -
+# Create namespace before Helm deployment
+echo "Creating namespace ${NAMESPACE}..."
+kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
 # Add Helm repository
+echo "Adding New Relic Helm repository..."
 helm repo add newrelic https://helm-charts.newrelic.com
 helm repo update
 
 # Deploy with Helm
+echo "Deploying to Kubernetes..."
 helm upgrade --install otel-reservoir newrelic/nri-bundle \
+  -n ${NAMESPACE} --create-namespace \
   -f values.reservoir.yaml \
-  --set global.licenseKey=$LICENSE_KEY \
-  --set global.cluster=$CLUSTER_NAME \
-  --set image.repository=${REGISTRY}/${ORG}/${IMAGE_NAME} \
-  --set image.tag=${VERSION} \
-  --namespace otel
+  --set global.licenseKey="${LICENSE_KEY}" \
+  --set global.cluster="${CLUSTER_NAME}" \
+  --set image.repository="${REGISTRY}/${ORG}/${IMAGE_NAME}" \
+  --set image.tag="${VERSION}"
 
-# Step 2: Verify deployment
+# Verify deployment
 echo "Verifying deployment..."
-kubectl get pods -n otel -w
+kubectl get pods -n ${NAMESPACE} -w
 
+echo ""
 echo "Deployment complete!"
 echo ""
 echo "To access the collector metrics:"
-echo "kubectl port-forward -n otel svc/otel-collector 8888:8888"
+echo "kubectl port-forward -n ${NAMESPACE} svc/otel-collector 8888:8888"
 echo ""
 echo "To check logs:"
-echo "kubectl logs -n otel deployment/otel-collector"
+echo "kubectl logs -n ${NAMESPACE} deployment/otel-collector"
+echo ""
+echo "To troubleshoot common issues:"
+echo "1. If pods show CrashLoopBackOff & Badger permission denied:"
+echo "   - Ensure security context has fsGroup: 10001"
+echo "2. If pods show imagePullBackOff:"
+echo "   - Verify tag matches between chart and pushed image"
+echo "3. If processor_reservoir_sampler doesn't appear in metrics:"
+echo "   - Verify manifest patch was applied correctly"
