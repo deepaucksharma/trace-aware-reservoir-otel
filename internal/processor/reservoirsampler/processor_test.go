@@ -57,12 +57,12 @@ func TestConfigValidation(t *testing.T) {
 
 	// Valid config
 	cfg.SizeK = 100
-	cfg.WindowDuration = "30s"
+	cfg.WindowDuration = 30 * time.Second
 	cfg.CheckpointPath = "/tmp/checkpoint.db"
-	cfg.CheckpointInterval = "5s"
+	cfg.CheckpointInterval = 5 * time.Second
 	cfg.TraceAware = true
 	cfg.TraceBufferMaxSize = 1000
-	cfg.TraceBufferTimeout = "5s"
+	cfg.TraceBufferTimeout = 5 * time.Second
 
 	assert.NoError(t, cfg.Validate())
 
@@ -72,9 +72,9 @@ func TestConfigValidation(t *testing.T) {
 	cfg.SizeK = 100 // Reset
 
 	// Invalid config: empty window duration
-	cfg.WindowDuration = ""
+	cfg.WindowDuration = 0
 	assert.Error(t, cfg.Validate())
-	cfg.WindowDuration = "30s" // Reset
+	cfg.WindowDuration = 30 * time.Second // Reset
 
 	// Invalid config: empty checkpoint path
 	cfg.CheckpointPath = ""
@@ -82,9 +82,9 @@ func TestConfigValidation(t *testing.T) {
 	cfg.CheckpointPath = "/tmp/checkpoint.db" // Reset
 
 	// Invalid config: empty checkpoint interval
-	cfg.CheckpointInterval = ""
+	cfg.CheckpointInterval = 0
 	assert.Error(t, cfg.Validate())
-	cfg.CheckpointInterval = "5s" // Reset
+	cfg.CheckpointInterval = 5 * time.Second // Reset
 
 	// Invalid config: trace-aware enabled but missing buffer configs
 	cfg.TraceAware = true
@@ -92,9 +92,9 @@ func TestConfigValidation(t *testing.T) {
 	assert.Error(t, cfg.Validate())
 	cfg.TraceBufferMaxSize = 1000 // Reset
 
-	cfg.TraceBufferTimeout = ""
+	cfg.TraceBufferTimeout = 0
 	assert.Error(t, cfg.Validate())
-	cfg.TraceBufferTimeout = "5s" // Reset
+	cfg.TraceBufferTimeout = 5 * time.Second // Reset
 }
 
 // TestReservoirSampling tests the core reservoir sampling algorithm functionality
@@ -102,9 +102,9 @@ func TestReservoirSampling(t *testing.T) {
 	// Create processor with in-memory storage (no checkpoints)
 	cfg := &Config{
 		SizeK:              10,
-		WindowDuration:     "10s",
+		WindowDuration:     10 * time.Second,
 		CheckpointPath:     "",
-		CheckpointInterval: "1s",
+		CheckpointInterval: 1 * time.Second,
 		TraceAware:         false,
 	}
 
@@ -138,10 +138,8 @@ func TestReservoirSampling(t *testing.T) {
 	p, ok := proc.(*reservoirProcessor)
 	require.True(t, ok)
 
-	p.lock.RLock()
-	reservoirSize := len(p.reservoir)
-	windowCount := p.windowCount.Load()
-	p.lock.RUnlock()
+	reservoirSize := p.reservoir.Size()
+	windowCount := p.windowManager.IncrementCount()-1 // we just added one above
 
 	assert.Equal(t, int64(numSpans), windowCount, "Window count should match the number of spans processed")
 	assert.LessOrEqual(t, reservoirSize, cfg.SizeK, "Reservoir size should not exceed the configured limit")
@@ -152,12 +150,12 @@ func TestTraceAwareSampling(t *testing.T) {
 	// Create processor with trace-aware sampling
 	cfg := &Config{
 		SizeK:              10,
-		WindowDuration:     "10s",
+		WindowDuration:     10 * time.Second,
 		CheckpointPath:     "",
-		CheckpointInterval: "1s",
+		CheckpointInterval: 1 * time.Second,
 		TraceAware:         true,
 		TraceBufferMaxSize: 100,
-		TraceBufferTimeout: "50ms", // Short timeout for testing
+		TraceBufferTimeout: 50 * time.Millisecond, // Short timeout for testing
 	}
 
 	sink := new(consumertest.TracesSink)
@@ -270,9 +268,9 @@ func BenchmarkReservoirSampling(b *testing.B) {
 	// Create processor with in-memory storage (no checkpoints)
 	cfg := &Config{
 		SizeK:              1000,
-		WindowDuration:     "60s",
+		WindowDuration:     60 * time.Second,
 		CheckpointPath:     "",
-		CheckpointInterval: "1s",
+		CheckpointInterval: 1 * time.Second,
 		TraceAware:         false,
 	}
 
@@ -312,12 +310,12 @@ func BenchmarkTraceAwareSampling(b *testing.B) {
 	// Create processor with trace-aware sampling
 	cfg := &Config{
 		SizeK:              1000,
-		WindowDuration:     "60s",
+		WindowDuration:     60 * time.Second,
 		CheckpointPath:     "",
-		CheckpointInterval: "1s",
+		CheckpointInterval: 1 * time.Second,
 		TraceAware:         true,
 		TraceBufferMaxSize: 10000,
-		TraceBufferTimeout: "10s",
+		TraceBufferTimeout: 10 * time.Second,
 	}
 
 	sink := new(consumertest.TracesSink)

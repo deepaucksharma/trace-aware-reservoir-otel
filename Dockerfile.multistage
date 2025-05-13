@@ -1,70 +1,28 @@
-# ─── Stage 1: build NR-DOT with your processor ──────────────────────────────────
+# ---- Stage 1 : build NR-DOT + reservoir ---------------------------
 FROM golang:1.21 AS builder
+ARG NRDOT_VERSION=v0.91.0
+ARG RS_VERSION=v0.1.0         # comes from build-arg in CI
 
 RUN apt-get update && apt-get install -y make git
 
-# Clone NR-DOT repository
+# 1) clone NR-DOT at the tag we want
 RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
 WORKDIR /nrdot
 
-# Clone our reservoir sampler repository directly
-RUN git clone https://github.com/deepaucksharma/trace-aware-reservoir-otel.git /reservoir-sampler
+# 2) patch both manifests in one line
+RUN for m in distributions/nrdot-collector-{host,k8s}/manifest.yaml ; do \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" \
+        >> "$m" ; \
+    done
 
-# Find the manifest files
-RUN find . -name "manifest.yaml" -type f || true
-
-# Update module manifest and add replace directive
-RUN if [ -f "distributions/nrdot-collector-k8s/manifest.yaml" ]; then \
-    echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.0.0" >> distributions/nrdot-collector-k8s/manifest.yaml; \
-    fi
-
-# Create a local replace directive
-RUN echo "replace github.com/deepaucksharma/trace-aware-reservoir-otel => /reservoir-sampler" >> go.mod && \
-    cat go.mod
-
-# Run go mod tidy with error handling
-RUN go mod tidy || true
-
-# Show all modules
-RUN go list -m all | grep reservoir || true
-
-# Download OCB tool for building
-RUN go install go.opentelemetry.io/collector/cmd/builder@latest || true
-
-# Build the distribution using locally available code
-RUN mkdir -p /root/bin && \
-    which builder && cp $(which builder) /root/bin/ocb || true && \
-    chmod +x /root/bin/ocb || true
-
-# Show available scripts
-RUN ls -la scripts/ || true
-
-# Try to find the correct build script
-RUN find . -name "build.sh" -type f || true
-
-# Try running the build script with error handling
-RUN if [ -f "scripts/build.sh" ]; then \
-    scripts/build.sh -d "nrdot-collector-k8s" -b /root/bin/ocb || true; \
-    fi
-
-# Check possible build output locations
-RUN find /nrdot -name "otelcol-*" -type f | xargs ls -la || echo "No build output found"
-RUN find /nrdot -path "*/_build*" -type d || echo "No _build directory found"
-RUN find /nrdot -path "*/_dist*" -type d || echo "No _dist directory found"
-
-# Copy all possible build outputs to a common location
-RUN mkdir -p /tmp/binaries && \
-    find /nrdot -name "otelcol-*" -type f -exec cp {} /tmp/binaries/ \; || true && \
-    ls -la /tmp/binaries || echo "No binaries found"
+# 3) build (this drops the binary in _dist/nrdot/)
+RUN make dist
 
 # ─── Stage 2: slim runtime image ────────────────────────────────────────────────
 FROM alpine:3.19
 
 RUN addgroup -g 10001 otel && adduser -D -G otel -u 10001 otel
-
-# Copy the collector binary - using a single path
-COPY --from=builder /tmp/binaries/otelcol-nrdot /otelcol-nrdot
-
+COPY --from=builder /nrdot/_dist/nrdot/otelcol-nrdot /otelcol-nrdot
 RUN mkdir -p /var/otelpersist/badger && chown -R otel:otel /var/otelpersist
 
 USER otel
