@@ -1,0 +1,7 @@
+# metric                                       fn         op   val      notes
+- otelcol_receiver_accepted_spans_total        rate_30s   gte  200000   # Target throughput (adjust as needed)
+- otelcol_exporter_sent_spans_total            rate_30s   gte  190000   # Ensure spans are actually exported
+- otelcol_exporter_queue_utilization           last       lt   0.85
+- reservoir_sampler_reservoir_size             avg        gte  15000    # Check if reservoir is being utilized (target 75% of size_k)
+- reservoir_sampler_sampled_spans              inc        gt   1000     # Ensure some spans are sampled during the test
+- otelcol_processor_batch_batch_send_size      p95        gte  1024     # Check batch processor effectiveness

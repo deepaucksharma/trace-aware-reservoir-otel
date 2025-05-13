@@ -1,0 +1,27 @@
+# Profile for minimizing memory footprint on an edge deployment
+resources:
+  limits:
+    memory: 256Mi
+    cpu: "0.5"
+  requests:
+    memory: 128Mi
+    cpu: "0.25"
+collector:
+  configOverride:
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 70 # Default from project's values.yaml is 80
+        # spike_limit_percentage: 25 # Not in project's default config.yaml for memory_limiter
+                                     # This needs to be supported by the collector version's memory_limiter
+      reservoir_sampler:
+        size_k: 1000             # Smaller reservoir
+        window_duration: 120s    # Longer window to reduce processing frequency
+        trace_aware: true        # Edge might prefer complete traces, even if fewer
+        trace_buffer_max_size: 5000 # Smaller trace buffer
+        trace_buffer_timeout: 30s
+        checkpoint_interval: 60s # Balance between state saving and disk I/O
+        # db_compaction_schedule_cron: "" # Disable automatic compaction or set less frequently
+      batch:
+        timeout: 10s             # Longer batch timeout for edge, less frequent sends
+        send_batch_size: 512   # Smaller batches

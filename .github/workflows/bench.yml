@@ -1,0 +1,97 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # Nightly at 4 AM UTC
+  workflow_dispatch: # Allows manual triggering
+  push:
+    branches:
+      - main # Optional: run on pushes to main for quick feedback, might be too slow
+    paths:
+      - 'bench/**'
+      - 'charts/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  run-benchmarks:
+    name: Run E2E Benchmark (${{ matrix.profile }})
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false # Allow other benchmarks to run if one fails
+      matrix:
+        profile: [max-throughput-traces, tiny-footprint-edge]
+        # Add more profiles for weekly/monthly runs if needed
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # For git commands to determine version/tag
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22' # Match pte-kpi/go.mod
+
+      - name: Set up KinD Cluster
+        uses: engineerd/setup-kind@v0.9.0 # Or a newer version if available
+        with:
+          version: v0.20.0 # Specify KinD version
+          config: kind-config.yaml # Use existing kind-config.yaml from repo root
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0 # Specify Helm version
+
+      - name: Build Collector Docker Image
+        id: build_image
+        run: |
+          # Use short SHA for image tag in CI benchmark runs
+          IMAGE_TAG_SHA=$(git rev-parse --short HEAD)
+          echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}" >> $GITHUB_OUTPUT
+          # The root Makefile's 'image' target uses REGISTRY, ORG, IMAGE_NAME, VERSION
+          # Set VERSION to our SHA-based tag
+          make image REGISTRY=ghcr.io ORG=${{ github.repository_owner }} IMAGE_NAME=nrdot-reservoir VERSION=${IMAGE_TAG_SHA}
+        env:
+          # NEW_RELIC_KEY might not be needed for build, but set if Makefile expects it
+          NEW_RELIC_KEY: "DUMMY_FOR_BUILD"
+
+      - name: Load image into KinD
+        run: |
+          IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
+          kind load docker-image ghcr.io/${{ github.repository_owner }}/nrdot-reservoir:${IMAGE_TAG_SHA}
+
+      - name: Run Benchmark (${{ matrix.profile }})
+        run: |
+          IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
+          # Pass necessary variables to the bench Makefile
+          # NEW_RELIC_KEY is needed by the Helm chart for the exporter
+          make -C bench bench \
+            PROFILE=${{ matrix.profile }} \
+            DURATION=15m \
+            IMAGE_TAG=${IMAGE_TAG_SHA} \
+            NS=benchmark-${{ matrix.profile }} # Use unique namespace per profile
+        env:
+          NEW_RELIC_KEY: ${{ secrets.BENCHMARK_NEW_RELIC_KEY }} # Store actual key in GitHub secrets
+
+      - name: Upload KPI Results CSV
+        if: always() # Always run this step to upload results, even if previous steps fail
+        uses: actions/upload-artifact@v3
+        with:
+          name: kpi-results-${{ matrix.profile }}
+          path: /tmp/kpi_${{ matrix.profile }}_*.csv # Use wildcard for timestamped filename
+          retention-days: 7
+
+      - name: Clean up benchmark deployment
+        if: always() # Ensure cleanup happens
+        run: |
+          make -C bench clean_bench \
+            PROFILE=${{ matrix.profile }} \
+            NS=benchmark-${{ matrix.profile }} # Use the same unique namespace
