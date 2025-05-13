@@ -9,8 +9,10 @@ RUN apt-get update && apt-get install -y make git
 RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
 WORKDIR /nrdot
 
-# First check the actual directory structure
-RUN find . -name "manifest.yaml" -type f
+# Check the repository structure
+RUN find . -name "manifest.yaml" -type f && \
+    find . -name "Makefile" -type f && \
+    cat $(find . -name "Makefile" -type f | head -1) | grep -i "dist"
 
 # Add our processor to the k8s & host manifests - more cautious approach
 RUN set -ex && \
@@ -21,7 +23,12 @@ RUN set -ex && \
         echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-host/manifest.yaml; \
     fi
 
-RUN make dist          # produces _dist/nrdot/otelcol-nrdot
+# Look for available make targets
+RUN if [ -f "Makefile" ]; then \
+        make help || make --help || echo "No help target"; \
+        make -n || echo "No default target"; \
+        ls -la _build/collector-builder || echo "Builder not found"; \
+    fi
 
 # ─── Stage 2: slim runtime image ────────────────────────────────────────────────
 FROM alpine:3.19
