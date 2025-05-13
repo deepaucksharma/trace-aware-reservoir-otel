@@ -9,11 +9,17 @@ RUN apt-get update && apt-get install -y make git
 RUN git clone https://github.com/newrelic/opentelemetry-collector-releases.git /nrdot
 WORKDIR /nrdot
 
-# add your processor to the k8s & host manifests
-RUN for m in distributions/nrdot-collector-{host,k8s}/manifest.yaml ; do \
-        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" \
-        >> "$m" ; \
-    done
+# First check the actual directory structure
+RUN find . -name "manifest.yaml" -type f
+
+# Add our processor to the k8s & host manifests - more cautious approach
+RUN set -ex && \
+    if [ -f "distributions/nrdot-collector-k8s/manifest.yaml" ]; then \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-k8s/manifest.yaml; \
+    fi && \
+    if [ -f "distributions/nrdot-collector-host/manifest.yaml" ]; then \
+        echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler ${RS_VERSION}" >> distributions/nrdot-collector-host/manifest.yaml; \
+    fi
 
 RUN make dist          # produces _dist/nrdot/otelcol-nrdot
 
