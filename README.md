@@ -16,20 +16,21 @@ This repository implements a statistically-sound reservoir sampling processor fo
 ### 1. Build the Docker Image
 
 ```bash
-./build.sh
+make image
 ```
 
 ### 2. Deploy to Kubernetes
 
 ```bash
 export NEW_RELIC_KEY="your_license_key_here"
-./deploy-k8s.sh
+make deploy
 ```
 
 ### 3. Verify the Deployment
 
 ```bash
-./test-integration.sh
+make status
+make metrics
 ```
 
 ## Implementation Details
@@ -57,9 +58,11 @@ The processor uses Algorithm R for reservoir sampling with these key characteris
 
 ## Documentation
 
-- [Implementation Guide](IMPLEMENTATION-GUIDE.md) - Step-by-step guide for building and deploying
-- [Implementation Status](IMPLEMENTATION-STATUS.md) - Current status and next steps
-- [NR-DOT Integration](NRDOT-INTEGRATION.md) - Details on the New Relic OpenTelemetry Distribution integration
+- [Implementation Guide](docs/implementation-guide.md) - Step-by-step guide for building and deploying
+- [Windows Development Guide](docs/windows-guide.md) - Detailed setup instructions for Windows 10/11 environments
+- [Streamlined Workflow](docs/streamlined-workflow.md) - Best practices for optimizing the development experience
+- [Implementation Status](docs/implementation-status.md) - Current status and next steps
+- [NR-DOT Integration](docs/nrdot-integration.md) - Details on the New Relic OpenTelemetry Distribution integration
 
 ## Configuration
 
@@ -88,14 +91,51 @@ processors:
 - Helm (for Kubernetes deployment)
 - New Relic license key
 
-### Build and Test Locally
+### Building and Testing
+
+We've streamlined the development workflow using Make. Here are some common commands:
 
 ```bash
-# Run tests
-go test ./...
+# Run unit tests
+make test
 
-# Build and run
-./build.sh
+# Build the binary
+make build
+
+# Build the Docker image
+make image
+
+# Deploy to Kubernetes
+make deploy
+
+# Run the complete development cycle
+make dev
+
+# View logs
+make logs
+```
+
+### Windows Development 
+
+For Windows 10/11 users, we recommend using WSL 2 (Windows Subsystem for Linux) with Ubuntu 22.04 to maintain full compatibility with the Linux-based tooling in this project.
+
+See our [Windows Development Guide](docs/windows-guide.md) for detailed setup instructions.
+
+## Project Structure
+
+```
+trace-aware-reservoir-otel/
+│
+├── cmd/otelcol-reservoir/      # Main application entry point
+├── charts/reservoir/           # Helm chart 
+├── internal/                   # Core library code
+│   └── processor/
+│       └── reservoirsampler/   # Reservoir sampling implementation
+├── scripts/                    # Utility scripts
+├── docs/                       # Documentation
+├── .github/workflows/          # CI/CD pipelines
+├── Makefile                    # Build and development tasks
+└── README.md
 ```
 
 ## License

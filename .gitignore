@@ -1,43 +1,42 @@
-# Binaries
-bin/
+# Binaries for programs and plugins
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-e2e/temp/
+bin/
+dist/
 
 # Test binary, built with `go test -c`
 *.test
 
 # Output of the go coverage tool
 *.out
-coverage.html
-
-# Checkpoint database for tests
-*.db
-*.db.compact
-*.db.bak
 
 # Dependency directories
 vendor/
 
-# IDE and editor files
+# IDE specific files
 .idea/
 .vscode/
 *.swp
 *.swo
-*~
-
-# Log files
-*.log
 
 # OS specific files
 .DS_Store
 Thumbs.db
-**/.claude/settings.local.json
+
+# Local environment variables
+.env
+.envrc
+
+# Kubernetes generated manifests
+*.generated.yaml
+
+# Helm chart dependencies
+charts/*/charts/
+charts/*/Chart.lock
+
+# Temporary files
+tmp/
+temp/

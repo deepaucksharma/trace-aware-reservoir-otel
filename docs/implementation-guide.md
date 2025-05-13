@@ -10,6 +10,8 @@ This guide provides a step-by-step process to build, publish, and deploy the tra
 - GitHub account with permissions to publish to GitHub Container Registry (ghcr.io)
 - New Relic license key
 
+> **Note for Windows Users**: If you're on Windows 10/11, please refer to our [Windows Development Guide](WINDOWS-GUIDE.md) for detailed setup instructions using WSL 2.
+
 ## Step 1: Build the Docker Image
 
 The simplest approach is to use the provided multistage Dockerfile, which handles all the build steps in a controlled environment without requiring Go 1.23 installed locally.

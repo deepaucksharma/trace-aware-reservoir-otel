@@ -1,0 +1,31 @@
+{
+  "name": "Trace-Aware Reservoir Development",
+  "image": "mcr.microsoft.com/devcontainers/go:1.21",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true
+    },
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "version": "latest",
+      "helm": "latest",
+      "kubectl": "latest",
+      "minikube": "none"
+    },
+    "ghcr.io/devcontainers-contrib/features/kind:1": {}
+  },
+  "runArgs": ["--init"],
+  "postCreateCommand": "make setup",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "redhat.vscode-yaml",
+        "mutantdino.resourcemonitor",
+        "github.copilot"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}
