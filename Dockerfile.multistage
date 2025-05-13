@@ -18,14 +18,14 @@ RUN if [ -f "distributions/nrdot-collector-k8s/manifest.yaml" ]; then \
     echo "  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.0.0" >> distributions/nrdot-collector-k8s/manifest.yaml; \
     fi
 
-# Create a local replace directive - adding || true to prevent failures
+# Create a local replace directive
 RUN echo "replace github.com/deepaucksharma/trace-aware-reservoir-otel => /reservoir-sampler" >> go.mod && \
     cat go.mod
 
 # Run go mod tidy with error handling
 RUN go mod tidy || true
 
-# Show all modules - adding || true to prevent grep from failing the build
+# Show all modules
 RUN go list -m all | grep reservoir || true
 
 # Download OCB tool for building
@@ -52,14 +52,18 @@ RUN find /nrdot -name "otelcol-*" -type f | xargs ls -la || echo "No build outpu
 RUN find /nrdot -path "*/_build*" -type d || echo "No _build directory found"
 RUN find /nrdot -path "*/_dist*" -type d || echo "No _dist directory found"
 
+# Copy all possible build outputs to a common location
+RUN mkdir -p /tmp/binaries && \
+    find /nrdot -name "otelcol-*" -type f -exec cp {} /tmp/binaries/ \; || true && \
+    ls -la /tmp/binaries || echo "No binaries found"
+
 # ─── Stage 2: slim runtime image ────────────────────────────────────────────────
 FROM alpine:3.19
 
 RUN addgroup -g 10001 otel && adduser -D -G otel -u 10001 otel
 
-# Try different possible locations for the built binary
-COPY --from=builder /nrdot/_build/otelcol-nrdot /otelcol-nrdot || true
-COPY --from=builder /nrdot/_dist/*/otelcol-* /otelcol-nrdot || true
+# Copy the collector binary - using a single path
+COPY --from=builder /tmp/binaries/otelcol-nrdot /otelcol-nrdot
 
 RUN mkdir -p /var/otelpersist/badger && chown -R otel:otel /var/otelpersist
 
