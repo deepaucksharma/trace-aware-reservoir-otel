@@ -1,4 +1,4 @@
-# Simplified Makefile for trace-aware-reservoir-otel POC
+# Makefile for trace-aware-reservoir-otel
 
 # Configuration variables
 REGISTRY ?= ghcr.io
@@ -16,33 +16,38 @@ help: ## Show this help
 
 # Development tasks
 .PHONY: test
-test: ## Run unit tests
-	go test ./... -v -cover
+test: ## Run all unit tests
+	go test ./core/... ./apps/... ./bench/runner/... -v -cover
+
+.PHONY: test-core
+test-core: ## Run core library tests only
+	go test ./core/... -v -cover
 
 .PHONY: build
-build: ## Build the Go binary
-	go build -o bin/otelcol-reservoir ./cmd/otelcol-reservoir
+build: ## Build the collector application
+	go build -o bin/otelcol-reservoir ./apps/collector
 
 .PHONY: image
 image: ## Build Docker image
 	docker build -t $(IMAGE) \
 	  --build-arg NRDOT_VERSION=v0.91.0 \
 	  --build-arg RS_VERSION=$(VERSION) \
-	  -f Dockerfile.multistage .
+	  -f build/docker/Dockerfile.multistage .
 
 # Kubernetes deployment
 .PHONY: kind
 kind: ## Create kind cluster if not exists
-	kind create cluster --config kind-config.yaml || true
+	kind create cluster --config infra/kind/kind-config.yaml || true
 	kind load docker-image $(IMAGE)
 
 .PHONY: deploy
 deploy: ## Deploy to Kubernetes
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install otel-reservoir ./charts/reservoir \
+	helm upgrade --install otel-reservoir ./infra/helm/otel-bundle \
 	  -n $(NAMESPACE) \
+	  --set mode=collector \
 	  --set global.licenseKey="$(LICENSE_KEY)" \
-	  --set image.repository="$(IMAGE_REPO)" \
+	  --set image.repository="$(REGISTRY)/$(ORG)/$(IMAGE_NAME)" \
 	  --set image.tag="$(VERSION)"
 
 .PHONY: dev
@@ -73,6 +78,18 @@ clean: ## Clean up resources
 	helm uninstall otel-reservoir -n $(NAMESPACE) || true
 	kubectl delete namespace $(NAMESPACE) || true
 	rm -rf bin dist
+
+# Benchmarking
+.PHONY: bench
+bench: ## Run benchmarks (must specify IMAGE)
+	make -C bench run IMAGE=$(IMAGE) \
+		$(if $(PROFILES),PROFILES=$(PROFILES),) \
+		$(if $(DURATION),DURATION=$(DURATION),) \
+		$(if $(LICENSE_KEY),NRLICENSE=$(LICENSE_KEY),)
+
+.PHONY: bench-clean
+bench-clean: ## Clean up benchmark resources
+	make -C bench clean
 
 # Default target
 .DEFAULT_GOAL := help

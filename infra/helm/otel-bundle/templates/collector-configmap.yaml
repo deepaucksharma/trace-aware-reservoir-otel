@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-collector-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+    {{- if .Values.profile }}
+    profile: {{ .Values.profile }}
+    {{- end }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      {{- if .Values.collector.configOverride.processors }}
+      {{- tpl (toYaml .Values.collector.configOverride.processors) . | nindent 6 }}
+      {{- end }}
+
+    exporters:
+      {{- if .Values.collector.configOverride.exporters }}
+      {{- tpl (toYaml .Values.collector.configOverride.exporters) . | nindent 6 }}
+      {{- else }}
+      # Default exporter to New Relic
+      otlphttp:
+        endpoint: https://otlp.nr-data.net:4318
+        headers:
+          api-key: {{ .Values.global.licenseKey }}
+      {{- end }}
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      {{- if .Values.collector.configOverride.service }}
+      {{- tpl (toYaml .Values.collector.configOverride.service) . | nindent 6 }}
+      {{- else }}
+      # Default service configuration
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, reservoir_sampler]
+          exporters: [otlphttp]
+      telemetry:
+        metrics:
+          address: 0.0.0.0:8888
+      {{- end }}
+{{- end }}

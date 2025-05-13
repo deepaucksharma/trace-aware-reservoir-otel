@@ -1,0 +1,46 @@
+{{- if eq .Values.mode "fanout" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-fanout
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-fanout
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+spec:
+  replicas: {{ .Values.fanout.replicaCount }}
+  selector:
+    matchLabels:
+      app: otel-fanout
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: otel-fanout
+        release: {{ .Release.Name }}
+        mode: {{ .Values.mode }}
+    spec:
+      containers:
+        - name: fanout
+          image: "{{ .Values.fanout.image.repository }}:{{ .Values.fanout.image.tag }}"
+          imagePullPolicy: {{ .Values.fanout.image.pullPolicy }}
+          args:
+            - "--config=/etc/otel/config.yaml"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+{{ toYaml .Values.fanout.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-fanout-config
+{{- end }}

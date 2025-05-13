@@ -1,28 +1,39 @@
-# Profile for maximizing trace ingest throughput
-resources:
-  limits:
-    cpu: "2"            # 2 full cores
-  requests:
-    cpu: "1"
-    memory: "1Gi" # Ensure enough memory for high throughput
+# Profile: max-throughput-traces
+# Optimized for maximum trace throughput
 collector:
+  replicaCount: 1
   configOverride:
     processors:
-      resource/add-profile:
-        attributes:
-          - action: upsert
-            key: benchmark.profile
-            value: max-throughput-traces
-      reservoir_sampler:
-        size_k: 20000       # Larger reservoir for throughput
-        window_duration: 15s # Shorter window, more frequent processing/exporting
-        trace_aware: false   # Potentially simpler/faster sampling for raw throughput
-        checkpoint_interval: 60s # Less frequent checkpointing for performance
+      memory_limiter:
+        check_interval: 100ms
+        limit_percentage: 90
+        spike_limit_percentage: 95
       batch:
-        send_batch_size: 2048 # Larger batch size
-        timeout: 1s           # Short timeout for quick sending
+        timeout: 100ms
+        send_batch_size: 10000
+      reservoir_sampler:
+        size_k: 15000
+        window_duration: 30s
+        checkpoint_path: /var/otelpersist/badger
+        checkpoint_interval: 5s
+        trace_aware: true
+        trace_buffer_timeout: 5s
+        trace_buffer_max_size: 500000
+        db_compaction_schedule_cron: "0 */6 * * *"
+        db_compaction_target_size: 268435456 # 256 MiB
     service:
       pipelines:
         traces:
-          # Ensure the resource processor is included in the right order
-          processors: [memory_limiter, batch, reservoir_sampler, resource/add-profile]
+          receivers: [otlp]
+          processors: [memory_limiter, batch, reservoir_sampler]
+          exporters: [otlphttp]
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+  persistence:
+    enabled: true
+    size: 2Gi

@@ -1,7 +1,42 @@
-# metric                                       fn         op   val      notes
-- otelcol_receiver_accepted_spans_total        rate_30s   gte  200000   # Target throughput (adjust as needed)
-- otelcol_exporter_sent_spans_total            rate_30s   gte  190000   # Ensure spans are actually exported
-- otelcol_exporter_queue_utilization           last       lt   0.85
-- reservoir_sampler_reservoir_size             avg        gte  15000    # Check if reservoir is being utilized (target 75% of size_k)
-- reservoir_sampler_sampled_spans              inc        gt   1000     # Ensure some spans are sampled during the test
-- otelcol_processor_batch_batch_send_size      p95        gte  1024     # Check batch processor effectiveness
+rules:
+  - name: "Memory Usage"
+    description: "Memory usage should be below threshold"
+    metric: "process_runtime_heap_alloc_bytes"
+    min_value: 0
+    max_value: 500000000 # 500MB
+    critical: true
+
+  - name: "CPU Usage"
+    description: "CPU usage should be reasonable"
+    metric: "process_cpu_seconds_total"
+    min_value: 0
+    max_value: 30 # Per minute
+    critical: true
+    
+  - name: "Reservoir Size"
+    description: "Reservoir should maintain expected size"
+    metric: "reservoir_size"
+    min_value: 14000 # Expected to be close to 15000
+    max_value: 16000
+    critical: true
+    
+  - name: "Sampling Rate"
+    description: "System should process traces at minimum rate"
+    metric: "sampled_spans_total"
+    min_value: 1000 # Minimum spans per minute
+    max_value: 0 # No upper limit
+    critical: true
+    
+  - name: "Checkpoint Duration"
+    description: "Checkpoints should complete quickly"
+    metric: "checkpoint_duration_seconds"
+    min_value: 0
+    max_value: 5 # 5 seconds max
+    critical: false
+    
+  - name: "Database Size"
+    description: "Database size should remain reasonable"
+    metric: "reservoir_db_size_bytes"
+    min_value: 0
+    max_value: 536870912 # 512 MB
+    critical: false

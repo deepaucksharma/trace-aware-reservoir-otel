@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-collector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+    {{- if .Values.profile }}
+    profile: {{ .Values.profile }}
+    {{- end }}
+spec:
+  replicas: {{ .Values.collector.replicaCount }}
+  selector:
+    matchLabels:
+      app: otel-collector
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        release: {{ .Release.Name }}
+        mode: {{ .Values.mode }}
+        {{- if .Values.profile }}
+        profile: {{ .Values.profile }}
+        {{- end }}
+        benchmark.profile: {{ .Values.profile | default "default" }}
+    spec:
+      containers:
+        - name: collector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--config=/etc/otelcol-nrdot/config.yaml"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-nrdot
+            {{- if .Values.collector.persistence.enabled }}
+            - name: persistence
+              mountPath: /var/otelpersist
+            {{- end }}
+          resources:
+{{ toYaml .Values.collector.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-collector-config
+        {{- if .Values.collector.persistence.enabled }}
+        - name: persistence
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pvc
+        {{- end }}
+{{- end }}

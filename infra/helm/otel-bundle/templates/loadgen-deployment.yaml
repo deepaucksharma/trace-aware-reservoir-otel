@@ -1,0 +1,35 @@
+{{- if eq .Values.mode "loadgen" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-loadgen
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-loadgen
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+spec:
+  replicas: {{ .Values.loadgen.replicaCount }}
+  selector:
+    matchLabels:
+      app: otel-loadgen
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: otel-loadgen
+        release: {{ .Release.Name }}
+        mode: {{ .Values.mode }}
+    spec:
+      containers:
+        - name: loadgen
+          image: "{{ .Values.loadgen.image.repository }}:{{ .Values.loadgen.image.tag }}"
+          imagePullPolicy: {{ .Values.loadgen.image.pullPolicy }}
+          env:
+            - name: TARGET_ENDPOINT
+              value: "{{ .Values.loadgen.targetEndpoint }}"
+            - name: TRACES_PER_SECOND
+              value: "{{ .Values.loadgen.tracesPerSecond }}"
+            - name: DURATION
+              value: "{{ .Values.loadgen.duration }}"
+{{- end }}

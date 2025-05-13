@@ -1,0 +1,33 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+  # Metrics port for OpenTelemetry collector
+  - containerPort: 8888
+    hostPort: 8888
+    protocol: TCP
+  # OTLP gRPC port
+  - containerPort: 4317
+    hostPort: 4317
+    protocol: TCP
+  # OTLP HTTP port
+  - containerPort: 4318
+    hostPort: 4318
+    protocol: TCP
+# Three worker nodes for benchmarking
+- role: worker
+- role: worker
+- role: worker

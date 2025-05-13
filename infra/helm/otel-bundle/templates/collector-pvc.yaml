@@ -1,0 +1,22 @@
+{{- if eq .Values.mode "collector" }}
+{{- if .Values.collector.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+    {{- if .Values.profile }}
+    profile: {{ .Values.profile }}
+    {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.collector.persistence.size }}
+{{- end }}
+{{- end }}

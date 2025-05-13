@@ -12,7 +12,7 @@
 | **KinD**     | ≥ 0.20  | throw-away K8s cluster           |
 | **kubectl**  | ≥ 1.28  | deploy / inspect                 |
 | **Helm**     | ≥ 3.12  | charts for collectors & load-gen |
-| **Go**       | ≥ 1.22  | builds the tiny `pte-kpi` CLI    |
+| **Go**       | ≥ 1.22  | builds the benchmark runner      |
 | **GNU Make** | any     | root & `bench/Makefile` targets  |
 
 Optionally:
@@ -22,19 +22,28 @@ Optionally:
 
 ---
 
-## ✦ 2 Repo layout recap
+## ✦ 2 New Repo layout
 
 ```
 .
-├── bench/
-│   ├── profiles/          # one YAML per profile (Helm overrides)
-│   ├── kpis/              # declarative success criteria
-│   ├── fanout/values.yaml # tee-collector that duplicates traffic
-│   ├── pte-kpi/           # mini Go KPI evaluator
-│   ├── Makefile           # bench automation
-│   └── README.md          # quick reference
+├── core/                     # Core library code
+│   └── reservoir/            # Reservoir sampling implementation
+├── apps/                     # Applications
+│   ├── collector/            # OpenTelemetry collector integration
+│   └── tools/                # Supporting tools
+├── bench/                    # Benchmarking framework
+│   ├── profiles/             # one YAML per profile (Helm overrides)
+│   ├── kpis/                 # declarative success criteria
+│   └── runner/               # Go-based benchmark orchestrator
+├── infra/                    # Infrastructure code
+│   ├── helm/                 # Helm charts
+│   │   └── otel-bundle/      # Consolidated Helm chart
+│   └── kind/                 # Kind cluster configurations
+├── build/                    # Build configurations
+│   ├── docker/               # Dockerfiles
+│   └── scripts/              # Build scripts
 └── .github/workflows/
-    └── bench.yml          # nightly benchmark run
+    └── bench.yml            # nightly benchmark run
 ```
 
 ---
@@ -45,137 +54,153 @@ Optionally:
 # from repo root
 export IMAGE_TAG=bench   # any tag you like
 make image VERSION=$IMAGE_TAG
-kind create cluster --config kind-config.yaml   # once
-kind load docker-image ghcr.io/<you>/nrdot-reservoir:$IMAGE_TAG
 ```
 
 ---
 
-## ✦ 4 Spin up the fan-out (tee) collector
+## ✦ 4 Run Benchmarks with the Go Runner
 
 ```bash
-helm upgrade --install trace-fanout oci://open-telemetry/opentelemetry-collector \
-  -n fanout --create-namespace \
-  -f bench/fanout/values.yaml \
-  --set image.tag=v0.91.0   # NR-DOT base tag
+# This will handle the complete benchmark process
+make bench IMAGE=ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG DURATION=10m
 ```
 
-`bench/fanout/values.yaml` contains an OTLP exporter for **each** profile:
+This command:
+
+1. Creates a KinD cluster using infra/kind/kind-config.yaml
+2. Loads your image into the cluster
+3. Deploys the fanout collector using the helm/otel-bundle chart
+4. Deploys a collector for each profile in bench/profiles/
+5. Runs the benchmark for the specified duration
+6. Evaluates KPIs and reports results
+
+You can select specific profiles to run:
+
+```bash
+make bench IMAGE=ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG PROFILES=max-throughput-traces,tiny-footprint-edge
+```
+
+---
+
+## ✦ 5 Profile Configuration
+
+Profiles are defined in `bench/profiles/` as YAML files:
 
 ```yaml
-exporters:
-  otlp/max-throughput-traces:
-    endpoint: collector-max-throughput-traces-collector.bench-max-throughput-traces.svc.cluster.local:4317
-  otlp/tiny-footprint-edge:
-    endpoint: collector-tiny-footprint-edge-collector.bench-tiny-footprint-edge.svc.cluster.local:4317
-  # add more here if you create more profiles
+# bench/profiles/max-throughput-traces.yaml
+collector:
+  replicaCount: 1
+  configOverride:
+    processors:
+      reservoir_sampler:
+        size_k: 15000
+        window_duration: 30s
+        # ...other settings
+    # ...service configuration
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
 ```
 
-> **Why**
-> The tee receives traffic once (port 4317) and gRPC-forwards the stream to every downstream collector.
-> That guarantees each profile works on the exact same spans.
+Each profile can have its own KPI definitions in `bench/kpis/`:
+
+```yaml
+# bench/kpis/max-throughput-traces.yaml
+rules:
+  - name: "Memory Usage"
+    metric: "process_runtime_heap_alloc_bytes"
+    min_value: 0
+    max_value: 500000000 # 500MB
+    critical: true
+  # ...other KPI rules
+```
 
 ---
 
-## ✦ 5 Deploy one collector per profile
+## ✦ 6 How it Works
 
-```bash
-# Run *all* profiles against the same load
-make -C bench bench-all \
-    IMAGE_TAG=$IMAGE_TAG \
-    DURATION=10m \
-    NEW_RELIC_KEY=$NEW_RELIC_KEY   # or leave blank for local mode
-```
+The benchmark system utilizes a "fan-out" architecture to ensure identical traffic is sent to each profile:
 
-What happens:
+1. **Fan-out Collector**: Receives traffic from the load generator and duplicates it to each profile collector
+2. **Profile Collectors**: Each profile gets its own collector deployment with specific configuration
+3. **KPI Evaluation**: Metrics are scraped and evaluated against profile-specific KPI rules
+4. **Result Reporting**: Pass/fail results are reported with details on why any KPIs failed
 
-1. For each profile directory name (default: `max-throughput-traces`, `tiny-footprint-edge`)
-
-   * Helm installs `collector-<profile>` in namespace `bench-<profile>`
-   * Values override file `bench/profiles/<profile>.yaml` tunes reservoir\_sampler, CPU/mem, etc.
-   * A **resource processor** upserts `benchmark.profile=<profile>` (if you kept NR export enabled).
-2. A load generator (optional – add the Helm chart snippet of your choice) sends OTLP to
-   `trace-fanout.fanout.svc.cluster.local:4317`.
-3. `pte-kpi` starts scraping **each** collector's `:8888/metrics` endpoint for the duration you asked.
-4. At the end it emits `/tmp/kpi_<profile>_<timestamp>.csv` and PASS / FAIL lines to the console.
+The otel-bundle Helm chart supports three modes:
+- **collector**: Runs a collector with reservoir sampler (used for profile deployments)
+- **fanout**: Runs a fan-out collector that duplicates traffic
+- **loadgen**: Runs a load generator that sends synthetic traffic
 
 ---
 
-## ✦ 6 New Relic integration options
+## ✦ 7 New Relic integration options
 
 | Mode                         | How to enable                                                                                       | In NR you'll see…                                                                                            |
 | ---------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Silent Bench** (no export) | Comment out the `otlphttp` exporter in every profile and use the `logging` exporter instead.        | Nothing is sent; only local KPI CSVs.                                                                        |
 | **Side-by-side in NR**       | Keep `otlphttp` exporter **and** the `resource/add-profile` processor already shown in the example. | Filter by attribute `benchmark.profile`. No trace-ID collision because the attribute makes each copy unique. |
 
-If you prefer distinct `service.name`s instead of a custom attribute, just upsert:
-
-```yaml
-resource/add-profile:
-  attributes:
-    - action: upsert
-      key: service.name
-      value: my-service-${PROFILE}
-```
-
 ---
 
-## ✦ 7 Nightly GitHub Actions
+## ✦ 8 Nightly GitHub Actions
 
 `.github/workflows/bench.yml`:
 
 * Builds the image once (tag = short-SHA).
-* `setup-kind` action boots KinD.
-* Deployes all profiles and runs KPIs in parallel
-* Uploads KPI CSVs as artefacts good for 7 days.
-
-The run is \~15-20 minutes with two profiles on `ubuntu-latest`.
-
----
-
-## ✦ 8 Troubleshooting checklist
-
-| Symptom                                 | Fix                                                                                            |                                  |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------- |
-| **`pte-kpi` prints "metric not found"** | Check spelling in `bench/kpis/*.yaml`. Use \`curl svc/collector-\*/:8888/metrics               | grep reservoir\_sampler\` first. |
-| **Helm upgrade fails**                  | Add `--atomic` for auto-rollback; or inspect `kubectl -n bench-<p> logs deploy/collector-<p>`. |                                  |
-| **Duplicate traces in NR**              | Confirm the resource attribute upsert is present (see span attributes in NR UI).               |                                  |
-| **Fan-out exporter times out**          | Ensure the service name in `fanout/values.yaml` matches `helm release` and namespace.          |                                  |
+* Uses the Go-based benchmark runner to:
+  * Create a KinD cluster 
+  * Deploy all profiles
+  * Run benchmarks
+  * Evaluate KPIs
+* Uploads KPI CSVs as artifacts good for 7 days.
 
 ---
 
 ## ✦ 9 Clean-up
 
 ```bash
-# remove profile collectors
-make -C bench clean_all
-
-# alternatively, remove a specific profile
-make -C bench clean_bench PROFILE=max-throughput-traces
-
-# remove tee + load-gen if needed
-helm -n fanout  uninstall trace-fanout
-helm -n loadgen uninstall otel-load-generator   # if you deployed one
-
-kind delete cluster
+# Clean up all benchmark resources
+make bench-clean
 ```
 
 ---
 
-### That's it
+### Benchmark Runner Implementation
 
-You now have a repeatable harness that:
+The Go-based benchmark runner (`bench/runner/`) handles:
 
-* builds a single reservoir-sampler image,
-* clones one traffic stream across any number of tuned profiles,
-* evaluates pass/fail KPIs per profile locally *and* (optionally) in New Relic,
-* ships nightly in GitHub Actions.
+1. **Cluster Management**: Creates and configures the KinD cluster
+2. **Chart Deployment**: Handles Helm chart installation with proper values
+3. **Profile Configuration**: Applies profile-specific settings
+4. **KPI Evaluation**: Scrapes metrics and evaluates against KPI rules
+5. **Result Collection**: Generates CSV files and summary reports
 
-The implementation includes additional improvements to optimize performance and ensure accurate benchmarking:
+The runner orchestrates the entire benchmark process in a single command, making it easy to run comprehensive benchmarks with multiple profiles.
 
-1. **Parallel KPI execution** - After deploying all profiles, KPIs are evaluated in parallel for faster results
-2. **Flexible profile selection** - Use the `PROFILES_TO_RUN` variable to choose which profiles to benchmark
-3. **Empty license key handling** - When no New Relic key is provided, exporting is disabled properly
-4. **Enhanced metrics selection** - KPIs are based on metrics available directly from the collector
+---
+
+### Creating New Profiles
+
+To create a new benchmark profile:
+
+1. Add a new YAML file in `bench/profiles/` (e.g., `my-custom-profile.yaml`)
+2. Add corresponding KPI rules in `bench/kpis/` (e.g., `my-custom-profile.yaml`)
+3. Run the benchmark with your new profile:
+
+```bash
+make bench IMAGE=ghcr.io/<your-org>/nrdot-reservoir:latest PROFILES=my-custom-profile
+```
+
+---
+
+## ✦ 10 Troubleshooting checklist
+
+| Symptom                                 | Fix                                                                                      |
+| --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **KPI evaluation fails**                | Check spelling in `bench/kpis/*.yaml`. Use `kubectl exec -n bench-<profile> -- curl localhost:8888/metrics | grep reservoir_sampler` |
+| **Helm upgrade fails**                  | Check `kubectl -n bench-<profile> logs deploy/collector-<profile>` for errors            |
+| **Duplicate traces in NR**              | Confirm the resource attribute upsert is present (see span attributes in NR UI)          |
+| **Fan-out exporter times out**          | Ensure the service name in exporter configuration matches the deployed services          |
 
 Happy benchmarking!

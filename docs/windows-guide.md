@@ -1,60 +1,61 @@
 # Windows Development Guide for Trace-Aware Reservoir
 
-Below is the workflow that has proven smoothest for teammates on Windows 10/11 **without** losing feature-parity with the Linux-centric docs already in the repo.
+This guide provides a smooth workflow for Windows 10/11 developers working with the trace-aware-reservoir-otel project. It ensures full feature parity with Linux-based development.
 
 ---
 
-## 0  Bird-eye: what you'll spin up
+## 0. Overview: Development Environment Architecture
 
-| Layer                                                  | What runs there                                              | Why we choose it on Windows                                                                                                |
-| ------------------------------------------------------ | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| **WSL 2 (Ubuntu 22.04)**                               | All shell scripts (`build.sh`, `deploy-k8s.sh`, `go test …`) | Native Linux filesystem semantics; no path-length or line-ending headaches.                                                |
-| **Docker Desktop (Engine + BuildKit)**                 | Image builds + local registry cache                          | Docker Desktop integrates with WSL 2 automatically.                                                                        |
-| **Docker Desktop-embedded Kubernetes** **or** **kind** | Your NR-DOT + reservoir collector pods                       | Both work; pick one.<br> • Embedded K8s = zero configuration.<br> • kind = closer to CI and easier to blow away/re-create. |
-| **PowerShell / Windows Terminal**                      | Just launches WSL 2 and tails logs                           | No heavy lifting here.                                                                                                     |
+| Layer | What runs there | Why we choose it on Windows |
+|-------|----------------|------------------------------|
+| **WSL 2 (Ubuntu 22.04)** | Go development, Make commands, shell scripts | Native Linux filesystem semantics; avoids path-length and line-ending issues |
+| **Docker Desktop (Engine + BuildKit)** | Image builds and container execution | Seamless integration with WSL 2 |
+| **Docker Desktop-embedded Kubernetes** or **kind** | Collector and benchmark deployments | Convenient local Kubernetes environment |
+| **Windows Terminal / PowerShell** | Just for launching WSL 2 and monitoring logs | No heavy lifting here |
 
-You can of course run everything directly in PowerShell with Git-Bash, but WSL2 shaves hours off troubleshooting.
-
----
-
-## 1  Install prerequisites (one-time)
-
-1. **Enable WSL 2 + Ubuntu**
-
-   ```powershell
-   wsl --install
-   wsl --set-default-version 2
-   # first launch creates the Ubuntu user – remember that username
-   ```
-
-2. **Install Docker Desktop**
-
-   * Settings → "**Enable WSL 2 integration**" and tick your Ubuntu distro.
-   * Optional: tick "Enable Kubernetes" (or skip if you prefer kind).
-
-3. **Inside WSL**: basic tooling
-
-   ```bash
-   sudo apt update && sudo apt install -y \
-       git make build-essential curl
-   # Go 1.21+
-   wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
-   sudo tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
-   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-   source ~/.bashrc
-   ```
-
-4. **Helm & kind (if you choose kind instead of Docker-Desktop K8s)**
-
-   ```bash
-   curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-   curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-   chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
-   ```
+Using WSL 2 significantly reduces troubleshooting time and ensures compatibility with the Linux-centric CI/CD pipeline.
 
 ---
 
-## 2  Clone the project
+## 1. Install Prerequisites (One-Time Setup)
+
+### 1.1 Enable WSL 2 + Ubuntu
+
+```powershell
+wsl --install
+wsl --set-default-version 2
+# The first launch will prompt to create a username and password
+```
+
+### 1.2 Install Docker Desktop
+
+* Download and install Docker Desktop for Windows
+* In Settings:
+  * Enable "Use the WSL 2 based engine"
+  * Under Resources > WSL Integration, enable your Ubuntu distro
+  * Optional: Enable Kubernetes (or use kind inside WSL)
+
+### 1.3 Install Development Tools in WSL
+
+```bash
+sudo apt update && sudo apt install -y \
+    git make build-essential curl
+
+# Install Go 1.21+
+wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Install Helm and kind
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+```
+
+---
+
+## 2. Clone the Project
 
 ```bash
 cd ~
@@ -62,118 +63,173 @@ git clone https://github.com/deepaucksharma/trace-aware-reservoir-otel.git
 cd trace-aware-reservoir-otel
 ```
 
-> **Line-endings tip**: keep Git's "Checkout as-is, commit Unix-style" setting to avoid CRLF noise in shell scripts.
-
----
-
-## 3  Build the collector image locally
-
+**Line-endings tip**: Set Git to use Unix-style line endings:
 ```bash
-# still inside WSL
-./build.sh              # builds ghcr.io/deepaucksharma/nrdot-reservoir:v0.1.0
-```
-
-*If you use kind later*:
-
-```bash
-kind load docker-image ghcr.io/deepaucksharma/nrdot-reservoir:v0.1.0
+git config --global core.autocrlf input
 ```
 
 ---
 
-## 4  Spin up Kubernetes
+## 3. Build and Test
 
-### Option A – Docker Desktop built-in K8s (easiest)
+With our new Makefile-based workflow, development is straightforward:
 
-1. Toggle **Settings → Kubernetes → Enable** and click *Apply & restart*.
+```bash
+# Run tests
+make test
+
+# Build the Docker image
+make image VERSION=dev
+
+# Optional: If using kind instead of Docker Desktop Kubernetes
+make kind
+```
+
+---
+
+## 4. Deploy to Kubernetes
+
+### Option A – Docker Desktop built-in Kubernetes
+
+1. Make sure Kubernetes is enabled in Docker Desktop settings
 2. Verify:
-
    ```bash
    kubectl get nodes
    ```
 
-### Option B – kind inside WSL 2 (more isolated, reproducible)
+### Option B – kind inside WSL 2
 
 ```bash
-kind create cluster --config kind-config.yaml
+# Create a kind cluster
+kind create cluster --config infra/kind/kind-config.yaml
+```
+
+### Deploy with the Makefile
+
+```bash
+# Set your New Relic license key (optional)
+export NEW_RELIC_KEY="your_license_key_here"
+
+# Deploy to Kubernetes
+make deploy VERSION=dev
 ```
 
 ---
 
-## 5  Deploy the Helm chart
+## 5. Verify the Deployment
 
 ```bash
-export NEW_RELIC_KEY="YOUR_NR_LICENSE_KEY"
-export VERSION=v0.1.0              # tag you just built
-./deploy-k8s.sh
-```
+# Check if the pods are running
+make status
 
-*What the script does*
+# View the metrics
+make metrics
 
-* creates namespace `otel`
-* `helm repo add newrelic …; helm upgrade --install …` with `values.reservoir.yaml`
-* streams `kubectl get pods -w` so you can watch the collector come up
-
----
-
-## 6  Verify it works
-
-```bash
-# 1. Pod healthy?
-kubectl get pods -n otel
-
-# 2. processor_reservoir_sampler metrics exposed?
-kubectl port-forward -n otel svc/otel-collector 8888:8888 &
-curl -s http://localhost:8888/metrics | grep reservoir_sampler
-kill %1
-
-# 3. Badger DB writable?
-kubectl exec -n otel deployment/otel-collector -- \
-       ls -la /var/otelpersist/badger
+# Check the logs
+make logs
 ```
 
 ---
 
-## 7  Iterate (code-→ image-→ cluster) quickly
+## 6. Run Benchmarks
 
-Inside WSL:
+Our new benchmark system works seamlessly in WSL:
 
 ```bash
-go test ./...                            # unit tests
-./build.sh                               # rebuild image
-kubectl rollout restart deploy/otel-collector -n otel
-kubectl logs -f deploy/otel-collector -n otel | grep reservoir_sampler
+# Run all benchmark profiles
+make bench IMAGE=ghcr.io/yourusername/nrdot-reservoir:dev DURATION=5m
+
+# Run specific profiles
+make bench IMAGE=ghcr.io/yourusername/nrdot-reservoir:dev PROFILES=max-throughput-traces
 ```
 
-Docker Desktop automatically re-uses the layers, so rebuilds are \~30 s after the first one.
+---
+
+## 7. Development Workflow
+
+For a rapid development cycle:
+
+```bash
+# One-command development cycle
+make dev VERSION=dev
+
+# After code changes, redeploy with:
+make image VERSION=dev
+kubectl rollout restart deployment/otel-reservoir-collector -n otel
+```
 
 ---
 
-## Common Windows-specific hiccups & fixes
+## 8. Work with Core Library and Applications
 
-| Symptom                                          | Likely cause                                               | Fix                                                                                                     |
-| ------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `bash: ./build.sh: /bin/bash^M: bad interpreter` | CRLF line endings after editing in Notepad                 | `git config --global core.autocrlf input` then `git checkout -- .`                                      |
-| `permission denied` for Badger path              | Volume mapped with NTFS perms, collector runs as UID 10001 | The chart already sets `fsGroup: 10001`. If you changed paths, add the same `securityContext` yourself. |
-| Image build fails at `make dist` step            | Antivirus locking Go cache dirs                            | Exclude `%USERPROFILE%\AppData\Local\Temp\go-build` (or run Docker Desktop in privileged mode).         |
-| `kind load docker-image …` is slow               | Windows file-sharing path slowness                         | Place the repo inside your WSL home (`/home/<user>`) – *not* on `/mnt/c/...`.                           |
+The modular project structure allows focused development:
+
+```bash
+# Work on the core library
+cd core/reservoir
+go test ./...
+
+# Work on the collector application
+cd apps/collector
+go test ./...
+
+# Work on the benchmark runner
+cd bench/runner
+go test ./...
+```
 
 ---
 
-## If you **really** don't want WSL 2
+## Common Windows-Specific Issues and Solutions
 
-* Use **Git Bash** for scripts, but you'll fight line-endings / chmod.
-* Make sure Docker Desktop's "Use the WSL 2 based engine" stays **on** even if you do all builds from PowerShell – otherwise Go's tar filepaths break.
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Line ending errors (^M) | CRLF line endings from Windows editors | `git config --global core.autocrlf input` then `git checkout -- .` |
+| Permission denied for Badger path | Volume mapped with NTFS permissions | The Helm chart already sets `fsGroup: 10001`. If needed, verify the securityContext |
+| Image build fails at Go step | Antivirus locking Go cache directories | Exclude `%USERPROFILE%\AppData\Local\Temp\go-build` or run Docker in privileged mode |
+| Slow file operations | Windows file-sharing path slowness | Keep the repository inside your WSL home (`/home/<user>`) not on `/mnt/c/...` |
+| kubectl or helm not found | Path issues | Ensure the binaries are in your PATH and correctly installed |
 
 ---
 
-### TL;DR
+## Using VS Code with WSL
 
-1. **Install WSL 2 + Docker Desktop** (with K8s or kind).
-2. Clone repo **inside WSL**.
-3. `./build.sh` → `./deploy-k8s.sh`.
-4. Verify on `localhost:8888/metrics`.
+For an integrated development experience:
 
-After that, every code change is just "`go test` → `./build.sh` → `kubectl rollout restart`".
+1. Install VS Code on Windows
+2. Install the "Remote - WSL" extension
+3. In WSL, navigate to your project directory and run:
+   ```bash
+   code .
+   ```
+4. VS Code will open with full WSL integration, including:
+   - Terminal access
+   - Go language support
+   - Debugging capabilities
+   - Git integration
 
-Happy sampling!
+---
+
+## Alternative: No WSL Approach
+
+While not recommended due to potential compatibility issues:
+
+* Use **Git Bash** for scripts (expect line-ending and chmod challenges)
+* Ensure Docker Desktop's "Use the WSL 2 based engine" remains enabled
+* Use absolute paths in all commands
+* Install Go, Helm, and kubectl directly on Windows
+
+---
+
+## Summary
+
+1. **Install WSL 2 + Docker Desktop** (with K8s or kind)
+2. Clone repo **inside WSL**
+3. Use `make` commands for all development tasks:
+   - `make test` - Run tests
+   - `make image VERSION=dev` - Build image
+   - `make deploy VERSION=dev` - Deploy to Kubernetes
+   - `make dev VERSION=dev` - Complete development cycle
+   - `make bench IMAGE=...` - Run benchmarks
+
+Happy sampling with a smooth Windows development experience!

@@ -1,37 +1,39 @@
-# Profile for minimizing memory footprint on an edge deployment
-resources:
-  limits:
-    memory: 256Mi
-    cpu: "0.5"
-  requests:
-    memory: 128Mi
-    cpu: "0.25"
+# Profile: tiny-footprint-edge
+# Optimized for minimal resource usage in edge environments
 collector:
+  replicaCount: 1
   configOverride:
     processors:
-      resource/add-profile:
-        attributes:
-          - action: upsert
-            key: benchmark.profile
-            value: tiny-footprint-edge
       memory_limiter:
         check_interval: 5s
-        limit_percentage: 70 # Default from project's values.yaml is 80
-        # spike_limit_percentage: 25 # Not in project's default config.yaml for memory_limiter
-                                     # This needs to be supported by the collector version's memory_limiter
-      reservoir_sampler:
-        size_k: 1000             # Smaller reservoir
-        window_duration: 120s    # Longer window to reduce processing frequency
-        trace_aware: true        # Edge might prefer complete traces, even if fewer
-        trace_buffer_max_size: 5000 # Smaller trace buffer
-        trace_buffer_timeout: 30s
-        checkpoint_interval: 60s # Balance between state saving and disk I/O
-        # db_compaction_schedule_cron: "" # Disable automatic compaction or set less frequently
+        limit_percentage: 75
+        spike_limit_percentage: 85
       batch:
-        timeout: 10s             # Longer batch timeout for edge, less frequent sends
-        send_batch_size: 512     # Smaller batches
+        timeout: 5s
+        send_batch_size: 512
+      reservoir_sampler:
+        size_k: 1000
+        window_duration: 120s
+        checkpoint_path: /var/otelpersist/badger
+        checkpoint_interval: 30s
+        trace_aware: true
+        trace_buffer_timeout: 60s
+        trace_buffer_max_size: 10000
+        db_compaction_schedule_cron: "0 */12 * * *"
+        db_compaction_target_size: 67108864 # 64 MiB
     service:
       pipelines:
         traces:
-          # Ensure the resource processor is included in the right order
-          processors: [memory_limiter, batch, reservoir_sampler, resource/add-profile]
+          receivers: [otlp]
+          processors: [memory_limiter, batch, reservoir_sampler]
+          exporters: [otlphttp]
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 512Mi

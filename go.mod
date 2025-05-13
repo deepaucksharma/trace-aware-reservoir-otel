@@ -3,6 +3,7 @@ module github.com/deepaucksharma/trace-aware-reservoir-otel
 go 1.21
 
 require (
+	github.com/deepaucksharma/reservoir v0.0.0
 	github.com/dgraph-io/badger/v3 v3.2103.5
 	github.com/robfig/cron/v3 v3.0.1
 	go.opentelemetry.io/collector v0.91.0
@@ -29,3 +30,5 @@ require (
 	golang.org/x/sys v0.15.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 )
+
+replace github.com/deepaucksharma/reservoir => ./core/reservoir

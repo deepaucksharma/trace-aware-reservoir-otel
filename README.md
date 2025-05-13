@@ -1,6 +1,37 @@
 # Trace-Aware Reservoir Sampling for OpenTelemetry
 
-A trace-aware reservoir sampling implementation for OpenTelemetry collector. This processor intelligently samples traces based on their importance, maintaining a representative sample even under high load.
+A trace-aware reservoir sampling implementation for OpenTelemetry Collector that intelligently samples traces based on their importance, maintaining a representative sample even under high load.
+
+## Project Structure
+
+The project is organized into these main components:
+
+```
+trace-aware-reservoir-otel/
+│
+├── core/                      # Core library code
+│   └── reservoir/             # Reservoir sampling implementation
+│
+├── apps/                      # Applications
+│   ├── collector/             # OpenTelemetry collector with reservoir sampling
+│   └── tools/                 # Supporting tools
+│       └── kpi-evaluator/     # KPI evaluation tool
+│
+├── bench/                     # Benchmarking framework
+│   ├── profiles/              # Benchmark configuration profiles
+│   ├── kpis/                  # Key Performance Indicators
+│   └── runner/                # Benchmark orchestration
+│
+├── infra/                     # Infrastructure code
+│   ├── helm/                  # Helm charts
+│   └── kind/                  # Kind cluster configurations
+│
+├── build/                     # Build configurations
+│   ├── docker/                # Dockerfiles
+│   └── scripts/               # Build scripts
+│
+└── docs/                      # Documentation
+```
 
 ## Overview
 
@@ -39,11 +70,7 @@ make metrics
 # From repo root:
 export IMAGE_TAG=bench
 make image VERSION=$IMAGE_TAG
-kind create cluster --config kind-config.yaml
-kind load docker-image ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG
-
-# Run all benchmark profiles against the same traffic:
-make -C bench bench-all IMAGE_TAG=$IMAGE_TAG DURATION=10m
+make bench IMAGE=ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG DURATION=10m
 ```
 
 ## Implementation Details
@@ -68,15 +95,6 @@ The processor uses Algorithm R for reservoir sampling with these key characteris
                      │ Persistence   │
                      └───────────────┘
 ```
-
-## Documentation
-
-- [Implementation Guide](docs/implementation-guide.md) - Step-by-step guide for building and deploying
-- [Windows Development Guide](docs/windows-guide.md) - Detailed setup instructions for Windows 10/11 environments
-- [Streamlined Workflow](docs/streamlined-workflow.md) - Best practices for optimizing the development experience
-- [Implementation Status](docs/implementation-status.md) - Current status and next steps
-- [NR-DOT Integration](docs/nrdot-integration.md) - Details on the New Relic OpenTelemetry Distribution integration
-- [Benchmark Implementation](docs/benchmark-implementation.md) - End-to-end benchmark guide with fan-out topology
 
 ## Configuration
 
@@ -113,6 +131,7 @@ These profiles can be benchmarked simultaneously against identical traffic using
 - Kubernetes cluster (e.g., Docker Desktop with Kubernetes enabled or KinD)
 - Helm (for Kubernetes deployment)
 - New Relic license key (optional)
+- Go 1.21+
 
 ### Building and Testing
 
@@ -121,6 +140,9 @@ We've streamlined the development workflow using Make. Here are some common comm
 ```bash
 # Run unit tests
 make test
+
+# Run only core library tests
+make test-core
 
 # Build the binary
 make build
@@ -138,7 +160,7 @@ make dev
 make logs
 
 # Run benchmarks
-make -C bench bench-all
+make bench IMAGE=ghcr.io/<your-org>/nrdot-reservoir:latest
 ```
 
 ### Windows Development 
@@ -147,27 +169,12 @@ For Windows 10/11 users, we recommend using WSL 2 (Windows Subsystem for Linux) 
 
 See our [Windows Development Guide](docs/windows-guide.md) for detailed setup instructions.
 
-## Project Structure
+## Documentation
 
-```
-trace-aware-reservoir-otel/
-│
-├── bench/                      # Benchmarking framework
-│   ├── profiles/               # Benchmark configuration profiles
-│   ├── kpis/                   # Key Performance Indicators
-│   ├── fanout/                 # Fan-out collector configuration
-│   └── pte-kpi/                # KPI evaluation tool
-├── cmd/otelcol-reservoir/      # Main application entry point
-├── charts/reservoir/           # Helm chart 
-├── internal/                   # Core library code
-│   └── processor/
-│       └── reservoirsampler/   # Reservoir sampling implementation
-├── scripts/                    # Utility scripts
-├── docs/                       # Documentation
-├── .github/workflows/          # CI/CD pipelines
-├── Makefile                    # Build and development tasks
-└── README.md
-```
+- [Implementation Guide](docs/implementation-guide.md) - Step-by-step guide for building and deploying
+- [Core Library](core/reservoir/README.md) - Documentation for the core reservoir sampling library
+- [Benchmark Implementation](docs/benchmark-implementation.md) - End-to-end benchmark guide with fan-out topology
+- [Contributing Guide](CONTRIBUTING.md) - Guidelines for contributing to the project
 
 ## License
 

@@ -1,91 +1,110 @@
 # Streamlined Development Workflow
 
-Below is a **practical "stream-lining blueprint"** that teams have adopted on projects like this (multi-stage Go + Docker + K8s stacks). You can cherry-pick pieces or adopt it wholesale—each layer removes one class of "it works on my machine" pain.
+Our new modular architecture enables a highly streamlined development workflow. This guide outlines the development practices adopted for this project, which you can use as a blueprint for similar projects.
 
 ---
 
-## 1  Put every dev task behind **one front door**
+## 1. Centralized Command Interface with Make
 
-### 🛠 `Makefile` (or Taskfile) as the canonical interface
+### 🛠 `Makefile` as the unified project interface
+
+Our root Makefile provides a comprehensive set of commands for all development and operational tasks:
 
 ```make
-# ---- bootstrap -------------------------------------------------------------
-.PHONY: setup
-setup: ## install lint/test/build tooling on host
-	./scripts/bootstrap.sh        # idempotent; only downloads when missing
+# Development tasks
+test:         # Run all unit tests
+test-core:    # Run core library tests only
+build:        # Build the collector application
+image:        # Build Docker image
 
-# ---- development loop ------------------------------------------------------
-.PHONY: test
-test: ## unit + integration tests
-	go test ./... -v -cover
+# Kubernetes deployment
+kind:         # Create kind cluster
+deploy:       # Deploy to Kubernetes
+dev:          # Complete development cycle: test, build image, deploy
 
-.PHONY: build
-build: ## compile + docker build (multi-arch)
-	goreleaser build --snapshot --clean
+# Operations
+status:       # Check deployment status
+logs:         # Stream collector logs
+metrics:      # Check collector metrics
 
-.PHONY: image
-image: ## docker build (uses multi-stage Dockerfile)
-	docker build \
-	  -t $(IMAGE_REPO):$(VERSION) \
-	  --build-arg RS_VERSION=$(VERSION) \
-	  -f Dockerfile.multistage .
-
-.PHONY: kind
-kind: ## spin up local K8s (kind)
-	kind create cluster --config kind-config.yaml || true
-	kind load docker-image $(IMAGE_REPO):$(VERSION)
-
-.PHONY: deploy
-deploy: kind ## helm upgrade into the cluster
-	helm upgrade --install otel-reservoir charts/reservoir \
-	  --namespace otel --create-namespace \
-	  --set image.repository=$(IMAGE_REPO) \
-	  --set image.tag=$(VERSION)
-
-.PHONY: dev
-dev: test image deploy ## 1-liner for the inner loop
+# Benchmarking
+bench:        # Run benchmarks with specified profiles
+bench-clean:  # Clean up benchmark resources
 ```
 
-*Advantage*: newcomers read `make help` and copy-paste; CI just runs the same targets.
+**Advantage**: New developers simply run `make help` to see available commands, and CI uses the same targets for consistency.
 
 ---
 
-## 2  Container-first **dev environment**
+## 2. Modular Architecture for Focused Development
 
-| Choice                                              | Why it helps                                                                                                          |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **`.devcontainer/`** (VS Code) or **`.gitpod.yml`** | *Zero-install*: clones repo & opens a shell that already has Go 1.21, Helm, kind, etc.                                |
-| **WSL 2 image** (for Windows)                       | Share identical Linux toolchain; side-by-side with Docker Desktop.                                                    |
-| **Scripts/Bootstrap**                               | `./scripts/bootstrap.sh` checks + installs Go, kind, Helm, pre-commit hooks for *any* Unix shell; avoids manual docs. |
+Our new project structure supports efficient, focused development:
 
----
+```
+trace-aware-reservoir-otel/
+│
+├── core/                     # Core library code
+│   └── reservoir/            # Reservoir sampling implementation
+├── apps/                     # Applications
+│   ├── collector/            # OpenTelemetry collector integration
+│   └── tools/                # Supporting tools
+├── bench/                    # Benchmarking framework
+│   ├── profiles/             # Benchmark profiles
+│   ├── kpis/                 # Key Performance Indicators
+│   └── runner/               # Go-based benchmark orchestrator
+├── infra/                    # Infrastructure code
+│   ├── helm/                 # Helm charts
+│   └── kind/                 # Kind cluster configurations
+└── build/                    # Build configurations
+    ├── docker/               # Dockerfiles
+    └── scripts/              # Build scripts
+```
 
-## 3  Hot-reload on Kubernetes instead of rebuild-push-rollout
+This structure enables:
 
-### Tilt or Skaffold
-
-* Watches Go files, rebuilds container in-cluster in <2 s.
-* Streams logs + port-forwards automatically.
-
-**tilt-up** becomes the only command during feature work.
-
----
-
-## 4  One **artifact factory** – Goreleaser
-
-* **Snapshot mode** for local `make build`
-* **Release mode** in GitHub Actions ➜
-
-  * builds multi-arch binaries + images
-  * attaches SBOM
-  * pushes OCI-compliant Helm chart + Docker image to GHCR
-  * auto-bumps version using Conventional Commits (semantic-release)
-
-`build.sh` & `deploy-k8s.sh` become thin shims that just call goreleaser or make.
+- **Focused Core Development**: Work on the core algorithm independently
+- **Separation of Concerns**: Keep infrastructure, build, and application code separate
+- **Clean Testing**: Test components in isolation with well-defined interfaces
 
 ---
 
-## 5  Self-document with **CI that calls the same targets**
+## 3. Container-first Development Environment
+
+| Tool | Purpose |
+|------|---------|
+| **Docker** | Consistent build environment via multi-stage Dockerfile |
+| **KinD** | Local Kubernetes testing without external dependencies |
+| **WSL 2** (for Windows) | Consistent Linux toolchain for Windows developers |
+
+**Setup script recommendation**: Add a `./build/scripts/bootstrap.sh` that checks and installs Go, Kind, Helm, and pre-commit hooks for any Unix shell.
+
+---
+
+## 4. Efficient Testing with Benchmarks
+
+The new benchmark system enables comprehensive testing:
+
+```bash
+# Run all benchmark profiles
+make bench IMAGE=ghcr.io/your-org/nrdot-reservoir:latest
+
+# Run specific profiles
+make bench IMAGE=ghcr.io/your-org/nrdot-reservoir:latest PROFILES=max-throughput-traces
+
+# Run for a specific duration
+make bench IMAGE=ghcr.io/your-org/nrdot-reservoir:latest DURATION=5m
+```
+
+**Features**:
+- **Profile-based Testing**: Compare different configurations side-by-side
+- **KPI Evaluation**: Automatically verify performance meets requirements
+- **Comprehensive Metrics**: Get detailed insights into reservoir behavior
+
+---
+
+## 5. CI/CD Integration
+
+Our updated GitHub Actions workflows promote consistency between local and CI environments:
 
 ```yaml
 # .github/workflows/ci.yml
@@ -93,82 +112,88 @@ jobs:
   test:
     steps:
       - uses: actions/checkout@v4
-      - run: make setup          # bootstrap tools
       - run: make test
   image:
     needs: test
     if: github.event_name == 'push' && startsWith(github.ref,'refs/tags/')
     steps:
       - uses: actions/checkout@v4
-      - run: make image
+      - run: make image VERSION=${{ github.ref_name }}
       - run: docker push $IMAGE
 ```
 
-*No duplicated logic*: you break the build in CI only if you broke it locally.
-
----
-
-## 6  Ship your Helm chart like a product
-
-1. Move `values.reservoir.yaml` → `charts/reservoir/values.yaml`.
-2. `helm package` in CI; push to OCI registry:
-
-   ```bash
-   helm push charts/reservoir ghcr.io/deepaucksharma/charts
-   ```
-3. Document **one-liner install**:
-
-   ```bash
-   helm install trace-sampler oci://ghcr.io/deepaucksharma/charts/reservoir --version 0.2.3
-   ```
-
-New users never clone the repo; they just helm-install.
-
----
-
-## 7  Instrument the "getting started" path
-
-* Add **`make doctor`**: checks Docker daemon, kind context, Helm repo reachability, license-key env-var.
-* Badge your README with ✔︎/✘ matrix (Docker Desktop, minikube, kind, WSL).
-* Short animated demo (`asciinema`) linked in README → instant trust.
-
----
-
-## 8  Tidy repository layout
-
-```
-trace-aware-reservoir-otel/
-│
-├── cmd/otelcol-reservoir/      # main() – easy to 'go run'
-├── charts/reservoir/           # Helm chart lives with code
-├── internal/...                # library code (already good)
-├── scripts/                    # bootstrap, lint, release helpers
-├── .devcontainer/ OR .gitpod.yml
-├── Makefile / Taskfile.yml
-└── docs/ (Implementation-Guide.md, etc.)
+**Nightly Benchmarks**:
+```yaml
+# .github/workflows/bench.yml
+jobs:
+  benchmark:
+    steps:
+      - uses: actions/checkout@v4
+      - run: make image VERSION=${{ github.sha }}
+      - run: make bench IMAGE=$IMAGE DURATION=15m
+      - uses: actions/upload-artifact@v3
+        with:
+          name: kpi-results
+          path: /tmp/kpi_*.csv
 ```
 
-Everything a contributor touches is in predictable places; IDEs index instantly.
+---
+
+## 6. Helm Chart as a Product
+
+Our consolidated Helm chart (`infra/helm/otel-bundle`) supports multiple deployment scenarios:
+
+1. **Collector Mode**: `--set mode=collector` for regular usage
+2. **Fanout Mode**: `--set mode=fanout` for benchmark traffic distribution
+3. **Loadgen Mode**: `--set mode=loadgen` for synthetic traffic generation
+
+**One-line installation**:
+```bash
+helm repo add trace-reservoir https://deepaucksharma.github.io/trace-aware-reservoir-otel/charts
+helm install trace-sampler trace-reservoir/otel-bundle --set global.licenseKey="your-key-here"
+```
 
 ---
 
-## 9  Pre-commit guard-rails (optional but 2-minute win)
+## 7. Developer Experience Improvements
+
+**Recommended additions**:
+
+- **Devcontainer configuration**: Add a `.devcontainer` directory with VS Code settings
+- **Pre-commit hooks**: Add `.pre-commit-config.yaml` for code quality checks
+- **Documentation**: Keep comprehensive docs for each component
+- **Examples**: Add example configurations for common use cases
+
+---
+
+## 8. Go Module Management
+
+With our new multi-module structure:
 
 ```bash
-pre-commit install
+# Core library module
+go get github.com/deepaucksharma/reservoir@latest
+
+# For local development with both modules, use a workspace:
+echo "use (./core/reservoir ./)" > go.work
 ```
 
-* goimports, golangci-lint, shellcheck, yamllint
-* rejects CRLF endings before they ever hit Git.
+This enables:
+- **Independent Versioning**: Core library can evolve separately
+- **Reusability**: Other projects can use the core library
+- **Focused Dependencies**: Each module only imports what it needs
 
 ---
 
-### 🎯  One-shot summary
+## Summary: Streamlined Workflow Benefits
 
-1. **Makefile** centralises every action (`test`, `image`, `deploy`, `dev`).
-2. **Devcontainer / WSL** gives reproducible toolchain on any OS.
-3. **Tilt/Skaffold** remove the rebuild-push loop.
-4. **Goreleaser + Helm OCI** publish binaries & charts from one config.
-5. **CI** just runs the same make targets.
+Our refactored architecture delivers these workflow improvements:
 
-Adopt these in order of impact; even steps 1-2 flatten onboarding time from *hours* to **<10 min**. Enjoy the calmer pipelines!
+1. **Centralized Commands**: One-stop `Makefile` for all operations
+2. **Modularity**: Focused development with clear component boundaries
+3. **Containerization**: Consistent environments across development and production
+4. **Automated Testing**: Comprehensive benchmarking with objective KPIs
+5. **Simplified Deployment**: Consolidated Helm chart for all scenarios
+6. **CI Integration**: Same commands locally and in CI pipelines
+
+By adopting these practices, we've transformed a complex, monolithic project into a modular, maintainable system with a developer-friendly workflow.

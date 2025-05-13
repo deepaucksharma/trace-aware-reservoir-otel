@@ -1,0 +1,19 @@
+apiVersion: v2
+name: otel-bundle
+description: A Helm chart for OpenTelemetry components with trace-aware reservoir sampling
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - opentelemetry
+  - tracing
+  - sampling
+  - reservoir
+  - observability
+
+maintainers:
+  - name: deepaucksharma
+    url: https://github.com/deepaucksharma
+
+dependencies: []

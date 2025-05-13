@@ -1,0 +1,51 @@
+{{- if eq .Values.mode "fanout" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-fanout-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-fanout
+    release: {{ .Release.Name }}
+    mode: {{ .Values.mode }}
+data:
+  config.yaml: |
+    receivers:
+      {{- if .Values.fanout.config.receivers }}
+      {{- tpl (toYaml .Values.fanout.config.receivers) . | nindent 6 }}
+      {{- else }}
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+      {{- end }}
+
+    processors:
+      {{- if .Values.fanout.config.processors }}
+      {{- tpl (toYaml .Values.fanout.config.processors) . | nindent 6 }}
+      {{- else }}
+      batch: {}
+      {{- end }}
+
+    exporters:
+      {{- if .Values.fanout.config.exporters }}
+      {{- tpl (toYaml .Values.fanout.config.exporters) . | nindent 6 }}
+      {{- end }}
+
+    service:
+      {{- if .Values.fanout.config.service }}
+      {{- tpl (toYaml .Values.fanout.config.service) . | nindent 6 }}
+      {{- else }}
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: 
+            {{- if .Values.fanout.config.service.pipelines.traces.exporters }}
+            {{- tpl (toYaml .Values.fanout.config.service.pipelines.traces.exporters) . | nindent 12 }}
+            {{- end }}
+      telemetry:
+        metrics:
+          address: 0.0.0.0:8888
+      {{- end }}
+{{- end }}

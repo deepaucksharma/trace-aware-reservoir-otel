@@ -1,6 +1,6 @@
-# Trace-Aware Reservoir Sampler + NR-DOT Implementation Guide
+# Trace-Aware Reservoir Sampler + NR-DOT Integration Guide
 
-This document outlines the steps to integrate the trace-aware-reservoir-otel processor with the New Relic OpenTelemetry Distribution (NR-DOT).
+This document outlines the steps to integrate the trace-aware-reservoir-otel processor with the New Relic OpenTelemetry Distribution (NR-DOT) using our new modular architecture.
 
 ## 1. Repository Setup
 
@@ -22,7 +22,7 @@ git checkout -b feat/reservoir-sampler
 
 ## 2. Modify NR-DOT Manifests
 
-Update the manifest.yaml files to include the reservoir sampler processor:
+Update the manifest.yaml files to include the reservoir sampler processor with the new module path:
 
 ### 2.1 Update Host Manifest
 
@@ -31,7 +31,7 @@ In `distributions/nrdot-collector-host/manifest.yaml`, add to the processors sec
 ```yaml
 processors:
   # existing processors...
-  - gomod: github.com/deepakshrma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.1.0
+  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/apps/collector/processor/reservoirsampler_with_badger v0.1.0
 ```
 
 ### 2.2 Update Kubernetes Manifest
@@ -41,93 +41,89 @@ In `distributions/nrdot-collector-k8s/manifest.yaml`, add to the processors sect
 ```yaml
 processors:
   # existing processors...
-  - gomod: github.com/deepakshrma/trace-aware-reservoir-otel/internal/processor/reservoirsampler v0.1.0
+  - gomod: github.com/deepaucksharma/trace-aware-reservoir-otel/apps/collector/processor/reservoirsampler_with_badger v0.1.0
 ```
 
 ## 3. Build the Distribution
 
+The build process is now streamlined with our multistage Dockerfile:
+
 ```bash
-cd opentelemetry-collector-releases
-make dist
+# From the repo root
+make image VERSION=v0.1.0
 ```
 
 Verify the processor is included:
 
 ```bash
-_dist/nrdot/otelcol-nrdot components | grep reservoir_sampler
+docker run --rm ghcr.io/deepaucksharma/nrdot-reservoir:v0.1.0 --config=none components | grep reservoir_sampler
 ```
 
-## 4. Build and Push Docker Image
+## 4. Deploy Using the New Helm Chart
+
+We now use a consolidated Helm chart that supports multiple modes:
 
 ```bash
-export IMAGE=ghcr.io/deepakshrma/nrdot-reservoir:v0.1.0
-docker build -t $IMAGE _dist/nrdot/
-docker push $IMAGE
+export NEW_RELIC_KEY="your_license_key_here"
+
+# Deploy the collector with reservoir sampler
+helm upgrade --install otel-reservoir ./infra/helm/otel-bundle \
+  --namespace otel --create-namespace \
+  --set mode=collector \
+  --set global.licenseKey="$NEW_RELIC_KEY" \
+  --set image.repository="ghcr.io/deepaucksharma/nrdot-reservoir" \
+  --set image.tag="v0.1.0"
 ```
 
-## 5. Helm Chart Configuration
+### 4.1 Using a Specific Profile
 
-Create a `values.reservoir.yaml` file with:
+You can also deploy with a specific benchmark profile:
 
-```yaml
-image:
-  repository: ghcr.io/deepakshrma/nrdot-reservoir
-  tag: v0.1.0
+```bash
+helm upgrade --install otel-reservoir ./infra/helm/otel-bundle \
+  --namespace otel --create-namespace \
+  --set mode=collector \
+  --set profile=max-throughput-traces \
+  --set global.licenseKey="$NEW_RELIC_KEY" \
+  --set image.repository="ghcr.io/deepaucksharma/nrdot-reservoir" \
+  --set image.tag="v0.1.0" \
+  -f bench/profiles/max-throughput-traces.yaml
+```
 
-collector:
-  configOverride:
-    processors:
-      reservoir_sampler:
-        size_k: 5000
-        window_duration: 60s
-        checkpoint_path: /var/otelpersist/badger
-        checkpoint_interval: 10s
-        trace_aware: true
-        trace_buffer_timeout: 30s
-        trace_buffer_max_size: 100000
-        db_compaction_schedule_cron: "0 2 * * *"
-        db_compaction_target_size: 134217728   # 128 MiB
-    service:
-      pipelines:
-        traces:
-          receivers: [otlp]
-          processors: [memory_limiter, batch, reservoir_sampler]
-          exporters: [otlphttp]
-persistence:
-  enabled: true
-  size: 2Gi
+## 5. Core Library Usage in Custom Projects
+
+The core library can be used independently of the OpenTelemetry collector:
+
+```go
+import (
+	"github.com/deepaucksharma/reservoir"
+)
+
+func main() {
+	// Create a window manager
+	window := reservoir.NewTimeWindow(60 * time.Second)
+
+	// Create a reservoir
+	reservoir := reservoir.NewAlgorithmR(5000, metricsReporter)
+
+	// Use in your own application
+	reservoir.AddSpan(span)
+}
 ```
 
 ## 6. Local Testing with Kind
 
-Create a `kind-config.yaml` file:
-
-```yaml
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  extraPortMappings:
-  - containerPort: 4317
-    hostPort: 4317
-  - containerPort: 4318
-    hostPort: 4318
-  - containerPort: 8888
-    hostPort: 8888
-```
-
 Create and deploy to the Kind cluster:
 
 ```bash
-kind create cluster --config kind-config.yaml
+# Create a Kind cluster with our config
+kind create cluster --config infra/kind/kind-config.yaml
 
-# Deploy with Helm
-helm repo add newrelic https://helm-charts.newrelic.com
-helm repo update
-helm install otel-reservoir newrelic/nri-bundle \
-  -f values.reservoir.yaml \
-  --set global.licenseKey=YOUR_LICENSE_KEY \
-  --set global.cluster=reservoir-demo
+# Load the image
+kind load docker-image ghcr.io/deepaucksharma/nrdot-reservoir:v0.1.0
+
+# Deploy with our Helm chart
+make deploy VERSION=v0.1.0 LICENSE_KEY=$NEW_RELIC_KEY
 ```
 
 ## 7. Verification
@@ -138,25 +134,48 @@ Check the following to verify your deployment:
    Check `http://localhost:8888/metrics` for `otelcol_build_info{features=...;processor_reservoir_sampler;}`
 
 2. **Reservoir Metrics**:
-   Monitor `reservoir_sampler.reservoir_size` and other metrics
+   Monitor `reservoir_size`, `sampled_spans_total`, and other metrics
 
 3. **Badger Database**:
-   Check `reservoir_sampler.db_size` and `reservoir_sampler.db_compactions`
+   Check `reservoir_db_size_bytes` and `compaction_count_total`
 
 4. **Window Rollover**:
-   Look for "Started new sampling window" log lines
+   Look for "Exporting reservoir" log lines when a window rolls over
 
 ## 8. Troubleshooting
 
-1. If the processor is not found, check the import path in the manifest.yaml files
-2. If the database has issues, ensure the PVC is correctly mounted
-3. If no traces appear in New Relic, verify the OTLP exporter configuration
+1. **Processor Not Found**: 
+   - Check the import path in the manifest.yaml files
+   - Verify the `set_config_value` in the Dockerfile.multistage is correct
 
-## 9. Performance Considerations
+2. **Database Issues**: 
+   - Ensure the PVC is correctly mounted 
+   - Check the permissions on the /var/otelpersist directory
+   - Verify the checkpoint_path is accessible
 
-- For high-volume environments, consider setting `WithSyncWrites(false)` in the Badger configuration
-- Adjust `reservoir_size` based on the expected trace volume
-- Monitor memory usage and adjust `trace_buffer_max_size` if needed
+3. **No Traces in New Relic**: 
+   - Verify the OTLP exporter configuration
+   - Check the API key is correctly set in global.licenseKey
+
+4. **Memory Usage High**: 
+   - Adjust the trace_buffer_max_size parameter
+   - Consider lowering the reservoir size_k value
+
+## 9. Performance Tuning
+
+Our modular architecture makes performance tuning easier:
+
+1. **Core Algorithm Tuning**:
+   - Adjust the reservoir size based on expected trace volume
+   - Configure window duration for appropriate sampling periods
+
+2. **Persistence Optimization**:
+   - Set appropriate checkpoint_interval for your durability needs
+   - Configure DB compaction schedule based on usage patterns
+
+3. **Memory Management**:
+   - Tune the trace buffer timeout and max size
+   - Monitor and adjust resource limits based on usage
 
 ## 10. CI/CD Setup
 
@@ -169,14 +188,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v4
-        with: {go-version: '1.21'}
-      - name: Build NR-DOT
-        run: make dist
       - name: Build & push image
         env: {IMAGE: ghcr.io/${{ github.repository_owner }}/nrdot-reservoir:${{ github.sha }}}
         run: |
-          docker build -t $IMAGE _dist/nrdot/
+          make image VERSION=${{ github.sha }}
           echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker push $IMAGE
 ```

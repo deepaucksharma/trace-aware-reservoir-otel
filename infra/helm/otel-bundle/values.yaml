@@ -1,0 +1,105 @@
+# Default values for otel-bundle chart
+# This is a YAML-formatted file.
+mode: "collector" # Possible values: collector, fanout, loadgen
+profile: "default" # Used when mode=collector, maps to bench/profiles/<profile>.yaml
+
+image: # Default image for SUT collector mode
+  repository: ghcr.io/deepaucksharma/nrdot-reservoir
+  tag: latest # Will be SUT_IMAGE_TAG
+  pullPolicy: IfNotPresent
+
+global:
+  licenseKey: "" # Populated by NEW_RELIC_KEY
+
+# --- Settings for SUT Collector Mode ---
+collector:
+  # Default SUT collector settings, can be overridden by bench/profiles/<profile>.yaml
+  replicaCount: 1
+  configOverride: # Default base config for SUT
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 90
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+      reservoir_sampler: # Defaults for the reservoir_sampler itself
+        size_k: 5000
+        window_duration: 60s
+        checkpoint_path: /var/otelpersist/badger
+        checkpoint_interval: 10s
+        trace_aware: true
+        trace_buffer_timeout: 30s
+        trace_buffer_max_size: 100000
+    exporters:
+      otlphttp: # Default exporter to New Relic
+        endpoint: https://otlp.nr-data.net:4318
+        # headers: api-key is handled by global.licenseKey
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, reservoir_sampler] # Default pipeline
+          exporters: [otlphttp]
+      telemetry:
+        metrics:
+          address: "0.0.0.0:8888"
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# --- Settings for Fan-out Mode ---
+fanout:
+  replicaCount: 1
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: 0.97.0 # Or your preferred stable version
+    pullPolicy: IfNotPresent
+  config: # This is the content of bench/fanout/values.yaml (adapted)
+    receivers:
+      otlp: 
+        protocols: 
+          grpc: 
+            endpoint: "0.0.0.0:4317"
+    processors: 
+      batch: {}
+    exporters: {} # Populated by bench/runner based on active profiles
+                  # Example:
+                  # otlp/profile1: { endpoint: "collector-profile1...", tls: {insecure: true} }
+    service:
+      pipelines: 
+        traces: 
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [] # Will be populated by active profiles
+      telemetry: 
+        metrics: 
+          address: "0.0.0.0:8888" # Enable metrics for fanout
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+
+# --- Settings for Loadgen Mode ---
+loadgen:
+  replicaCount: 1
+  image:
+    repository: omnition/synthetic-load-generator # Example, use desired loadgen image
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Load generator specific config
+  targetEndpoint: "trace-fanout-otel-bundle.fanout.svc.cluster.local:4317" # Default, verify service name
+  tracesPerSecond: 10
+  duration: "10m"
+  # ... other loadgen params
