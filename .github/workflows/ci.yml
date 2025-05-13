@@ -20,8 +20,11 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Run tests
-        run: go test ./...
+      - name: Run tests for all modules
+        run: |
+          # Setup Go workspace for multi-module testing
+          echo "use (./core/reservoir ./)" > go.work
+          make test
 
   build:
     name: Build Image
@@ -52,7 +55,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.multistage
+          file: ./build/docker/Dockerfile.multistage
           build-args: |
             NRDOT_VERSION=v0.91.0
             RS_VERSION=${{ steps.version.outputs.VERSION }}

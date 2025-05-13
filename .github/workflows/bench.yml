@@ -6,12 +6,13 @@ on:
   workflow_dispatch: # Allows manual triggering
   push:
     branches:
-      - main # Optional: run on pushes to main for quick feedback, might be too slow
+      - main
     paths:
       - 'bench/**'
-      - 'charts/**'
-      - 'internal/**'
-      - 'cmd/**'
+      - 'core/**'
+      - 'apps/**'
+      - 'infra/**'
+      - 'build/**'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -32,18 +33,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.22' # Match pte-kpi/go.mod
+          go-version: '1.22'
+
+      - name: Create Go workspace
+        run: |
+          echo "use (./core/reservoir ./bench/runner ./)" > go.work
+          go work sync
 
       - name: Set up KinD Cluster
-        uses: engineerd/setup-kind@v0.9.0 # Or a newer version if available
+        uses: engineerd/setup-kind@v0.9.0
         with:
-          version: v0.20.0 # Specify KinD version
-          config: kind-config.yaml # Use existing kind-config.yaml from repo root
+          version: v0.20.0
+          config: infra/kind/kind-config.yaml
 
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
-          version: v3.12.0 # Specify Helm version
+          version: v3.12.0
 
       - name: Build Collector Docker Image
         id: build_image
@@ -51,11 +57,9 @@ jobs:
           # Use short SHA for image tag in CI benchmark runs
           IMAGE_TAG_SHA=$(git rev-parse --short HEAD)
           echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}" >> $GITHUB_OUTPUT
-          # The root Makefile's 'image' target uses REGISTRY, ORG, IMAGE_NAME, VERSION
-          # Set VERSION to our SHA-based tag
-          make image REGISTRY=ghcr.io ORG=${{ github.repository_owner }} IMAGE_NAME=nrdot-reservoir VERSION=${IMAGE_TAG_SHA}
+          # Build the image using the Makefile
+          make image VERSION=${IMAGE_TAG_SHA}
         env:
-          # NEW_RELIC_KEY might not be needed for build, but set if Makefile expects it
           NEW_RELIC_KEY: "DUMMY_FOR_BUILD"
 
       - name: Load image into KinD
@@ -63,25 +67,23 @@ jobs:
           IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
           kind load docker-image ghcr.io/${{ github.repository_owner }}/nrdot-reservoir:${IMAGE_TAG_SHA}
 
-      - name: Run All Benchmarks with Fan-Out Topology
+      - name: Run Benchmarks
         run: |
           IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
-          # Run all profiles with fan-out topology
-          make -C bench bench-all \
-            DURATION=15m \
-            IMAGE_TAG=${IMAGE_TAG_SHA}
+          # Run benchmarks using the Go runner
+          make bench IMAGE=ghcr.io/${{ github.repository_owner }}/nrdot-reservoir:${IMAGE_TAG_SHA} DURATION=15m
         env:
-          NEW_RELIC_KEY: ${{ secrets.BENCHMARK_NEW_RELIC_KEY }} # Store actual key in GitHub secrets
+          NEW_RELIC_KEY: ${{ secrets.BENCHMARK_NEW_RELIC_KEY }}
 
       - name: Upload KPI Results CSV
-        if: always() # Always run this step to upload results, even if previous steps fail
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kpi-results
-          path: /tmp/kpi_*_*.csv # Use wildcard for all profile results
+          path: /tmp/kpi_*.csv
           retention-days: 7
 
-      - name: Clean up benchmark deployments
-        if: always() # Ensure cleanup happens
+      - name: Clean up benchmark resources
+        if: always()
         run: |
-          make -C bench clean_all
+          make bench-clean
