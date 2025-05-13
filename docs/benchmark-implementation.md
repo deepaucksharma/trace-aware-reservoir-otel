@@ -60,12 +60,14 @@ helm upgrade --install trace-fanout oci://open-telemetry/opentelemetry-collector
   --set image.tag=v0.91.0   # NR-DOT base tag
 ```
 
-`bench/fanout/values.yaml` already contains an OTLP exporter for **each** profile:
+`bench/fanout/values.yaml` contains an OTLP exporter for **each** profile:
 
 ```yaml
 exporters:
-  otlp/b1: endpoint: collector-b1.bench-b1.svc.cluster.local:4317
-  otlp/b3: endpoint: collector-b3.bench-b3.svc.cluster.local:4317
+  otlp/max-throughput-traces:
+    endpoint: collector-max-throughput-traces-collector.bench-max-throughput-traces.svc.cluster.local:4317
+  otlp/tiny-footprint-edge:
+    endpoint: collector-tiny-footprint-edge-collector.bench-tiny-footprint-edge.svc.cluster.local:4317
   # add more here if you create more profiles
 ```
 
@@ -124,7 +126,7 @@ resource/add-profile:
 
 * Builds the image once (tag = short-SHA).
 * `setup-kind` action boots KinD.
-* Matrix over profiles → `make -C bench bench`.
+* Deployes all profiles and runs KPIs in parallel
 * Uploads KPI CSVs as artefacts good for 7 days.
 
 The run is \~15-20 minutes with two profiles on `ubuntu-latest`.
@@ -146,9 +148,12 @@ The run is \~15-20 minutes with two profiles on `ubuntu-latest`.
 
 ```bash
 # remove profile collectors
-make -C bench clean_bench
+make -C bench clean_all
 
-# remove tee + load-gen
+# alternatively, remove a specific profile
+make -C bench clean_bench PROFILE=max-throughput-traces
+
+# remove tee + load-gen if needed
 helm -n fanout  uninstall trace-fanout
 helm -n loadgen uninstall otel-load-generator   # if you deployed one
 
@@ -166,4 +171,11 @@ You now have a repeatable harness that:
 * evaluates pass/fail KPIs per profile locally *and* (optionally) in New Relic,
 * ships nightly in GitHub Actions.
 
-Drop this doc into your repo and onboard the rest of the team. Happy benchmarking!
+The implementation includes additional improvements to optimize performance and ensure accurate benchmarking:
+
+1. **Parallel KPI execution** - After deploying all profiles, KPIs are evaluated in parallel for faster results
+2. **Flexible profile selection** - Use the `PROFILES_TO_RUN` variable to choose which profiles to benchmark
+3. **Empty license key handling** - When no New Relic key is provided, exporting is disabled properly
+4. **Enhanced metrics selection** - KPIs are based on metrics available directly from the collector
+
+Happy benchmarking!

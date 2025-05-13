@@ -33,6 +33,19 @@ make status
 make metrics
 ```
 
+### 4. Run Benchmarks
+
+```bash
+# From repo root:
+export IMAGE_TAG=bench
+make image VERSION=$IMAGE_TAG
+kind create cluster --config kind-config.yaml
+kind load docker-image ghcr.io/<your-org>/nrdot-reservoir:$IMAGE_TAG
+
+# Run all benchmark profiles against the same traffic:
+make -C bench bench-all IMAGE_TAG=$IMAGE_TAG DURATION=10m
+```
+
 ## Implementation Details
 
 The processor uses Algorithm R for reservoir sampling with these key characteristics:
@@ -63,6 +76,7 @@ The processor uses Algorithm R for reservoir sampling with these key characteris
 - [Streamlined Workflow](docs/streamlined-workflow.md) - Best practices for optimizing the development experience
 - [Implementation Status](docs/implementation-status.md) - Current status and next steps
 - [NR-DOT Integration](docs/nrdot-integration.md) - Details on the New Relic OpenTelemetry Distribution integration
+- [Benchmark Implementation](docs/benchmark-implementation.md) - End-to-end benchmark guide with fan-out topology
 
 ## Configuration
 
@@ -82,14 +96,23 @@ processors:
     db_compaction_target_size: 134217728 # Target size for compaction (128 MiB)
 ```
 
+## Benchmark Profiles
+
+The project includes a benchmarking system with different performance profiles:
+
+- **max-throughput-traces**: Optimized for maximum trace throughput
+- **tiny-footprint-edge**: Optimized for minimal resource usage in edge environments
+
+These profiles can be benchmarked simultaneously against identical traffic using our fan-out topology, allowing for direct comparison of different configurations.
+
 ## Development
 
 ### Prerequisites
 
 - Docker
-- Kubernetes cluster (e.g., Docker Desktop with Kubernetes enabled)
+- Kubernetes cluster (e.g., Docker Desktop with Kubernetes enabled or KinD)
 - Helm (for Kubernetes deployment)
-- New Relic license key
+- New Relic license key (optional)
 
 ### Building and Testing
 
@@ -113,6 +136,9 @@ make dev
 
 # View logs
 make logs
+
+# Run benchmarks
+make -C bench bench-all
 ```
 
 ### Windows Development 
@@ -126,6 +152,11 @@ See our [Windows Development Guide](docs/windows-guide.md) for detailed setup in
 ```
 trace-aware-reservoir-otel/
 │
+├── bench/                      # Benchmarking framework
+│   ├── profiles/               # Benchmark configuration profiles
+│   ├── kpis/                   # Key Performance Indicators
+│   ├── fanout/                 # Fan-out collector configuration
+│   └── pte-kpi/                # KPI evaluation tool
 ├── cmd/otelcol-reservoir/      # Main application entry point
 ├── charts/reservoir/           # Helm chart 
 ├── internal/                   # Core library code
