@@ -8,6 +8,11 @@ resources:
 collector:
   configOverride:
     processors:
+      resource/add-profile:
+        attributes:
+          - action: upsert
+            key: benchmark.profile
+            value: max-throughput-traces
       reservoir_sampler:
         size_k: 20000       # Larger reservoir for throughput
         window_duration: 15s # Shorter window, more frequent processing/exporting

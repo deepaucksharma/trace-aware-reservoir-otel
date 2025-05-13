@@ -1,0 +1,61 @@
+mode: deployment
+nameOverride: trace-fanout
+
+# Configuration for the OTel Collector - this acts as a "tee" to duplicate traces
+# to multiple downstream collectors for benchmark profiling
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  exporters:
+    otlp/max-throughput-traces:
+      endpoint: collector-max-throughput-traces.bench-max-throughput-traces.svc.cluster.local:4317
+      tls:
+        insecure: true
+    otlp/tiny-footprint-edge:
+      endpoint: collector-tiny-footprint-edge.bench-tiny-footprint-edge.svc.cluster.local:4317
+      tls:
+        insecure: true
+    # Add more profiles as needed
+    logging:
+      verbosity: normal  # optional debugging
+      
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        exporters: [otlp/max-throughput-traces, otlp/tiny-footprint-edge, logging]
+      metrics: null  # not needed for the tee
+      logs: null     # not needed for the tee
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001

@@ -19,13 +19,8 @@ on:
 
 jobs:
   run-benchmarks:
-    name: Run E2E Benchmark (${{ matrix.profile }})
+    name: Run E2E Benchmark
     timeout-minutes: 60
-    strategy:
-      fail-fast: false # Allow other benchmarks to run if one fails
-      matrix:
-        profile: [max-throughput-traces, tiny-footprint-edge]
-        # Add more profiles for weekly/monthly runs if needed
     runs-on: ubuntu-latest
 
     steps:
@@ -68,16 +63,13 @@ jobs:
           IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
           kind load docker-image ghcr.io/${{ github.repository_owner }}/nrdot-reservoir:${IMAGE_TAG_SHA}
 
-      - name: Run Benchmark (${{ matrix.profile }})
+      - name: Run All Benchmarks with Fan-Out Topology
         run: |
           IMAGE_TAG_SHA=${{ steps.build_image.outputs.IMAGE_TAG_SHA }}
-          # Pass necessary variables to the bench Makefile
-          # NEW_RELIC_KEY is needed by the Helm chart for the exporter
-          make -C bench bench \
-            PROFILE=${{ matrix.profile }} \
+          # Run all profiles with fan-out topology
+          make -C bench bench-all \
             DURATION=15m \
-            IMAGE_TAG=${IMAGE_TAG_SHA} \
-            NS=benchmark-${{ matrix.profile }} # Use unique namespace per profile
+            IMAGE_TAG=${IMAGE_TAG_SHA}
         env:
           NEW_RELIC_KEY: ${{ secrets.BENCHMARK_NEW_RELIC_KEY }} # Store actual key in GitHub secrets
 
@@ -85,13 +77,11 @@ jobs:
         if: always() # Always run this step to upload results, even if previous steps fail
         uses: actions/upload-artifact@v3
         with:
-          name: kpi-results-${{ matrix.profile }}
-          path: /tmp/kpi_${{ matrix.profile }}_*.csv # Use wildcard for timestamped filename
+          name: kpi-results
+          path: /tmp/kpi_*_*.csv # Use wildcard for all profile results
           retention-days: 7
 
-      - name: Clean up benchmark deployment
+      - name: Clean up benchmark deployments
         if: always() # Ensure cleanup happens
         run: |
-          make -C bench clean_bench \
-            PROFILE=${{ matrix.profile }} \
-            NS=benchmark-${{ matrix.profile }} # Use the same unique namespace
+          make -C bench clean_all

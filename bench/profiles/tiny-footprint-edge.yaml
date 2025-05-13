@@ -9,6 +9,11 @@ resources:
 collector:
   configOverride:
     processors:
+      resource/add-profile:
+        attributes:
+          - action: upsert
+            key: benchmark.profile
+            value: tiny-footprint-edge
       memory_limiter:
         check_interval: 5s
         limit_percentage: 70 # Default from project's values.yaml is 80
