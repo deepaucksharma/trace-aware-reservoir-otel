@@ -23,11 +23,11 @@ IMAGE_TAG    ?= latest # Default for local. CI should pass a specific tag.
 # Construct full image path:
 BENCH_IMAGE  ?= $(IMAGE_REPO)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-# Ensure NEW_RELIC_KEY is set, or provide a dummy for non-exporting tests
+# Ensure NEW_RELIC_KEY is set, or provide a null value for local testing
 LICENSE_KEY  ?= $(NEW_RELIC_KEY)
 ifeq ($(LICENSE_KEY),)
-    $(warning WARNING: NEW_RELIC_KEY is not set. Using a dummy key. Export may fail.)
-    LICENSE_KEY := "YOUR_NEW_RELIC_LICENSE_KEY"
+    $(warning WARNING: NEW_RELIC_KEY is not set. Disabling OTLP export to New Relic.)
+    LICENSE_KEY := ""
 endif
 
 HELM_VALUES_FILE := $(VALUES_DIR)/$(PROFILE).yaml
@@ -71,7 +71,7 @@ deploy-sut-profile: ## Deploy a single SUT profile collector
 		-n $(NS_PREFIX)-$(PROFILE) \
 		-f $(SUT_CHART_DIR)/values.yaml \
 		-f $(HELM_VALUES_FILE) \
-		--set image.repository=$(IMAGE_REPO)/$(IMAGE_NAME) \
+		--set image.repository=$(IMAGE_REPO) \
 		--set image.tag=$(IMAGE_TAG) \
 		--set global.licenseKey='$(LICENSE_KEY)' \
 		--wait --timeout=5m

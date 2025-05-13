@@ -1,5 +1,6 @@
 # metric                                       fn    op   val          notes
-- pod_rss_bytes                                max   lt   241172480.0  # 230MiB (ensure this metric source is available)
+# - pod_rss_bytes                              max   lt   241172480.0  # 230MiB (requires kube-state-metrics)
 - otelcol_exporter_queue_dropped_spans_total   inc   eq   0
 - reservoir_sampler_reservoir_size             max   lte  1000         # Reservoir should not exceed its configured k_size
 - reservoir_sampler_db_size                    last  lt   52428800.0   # BadgerDB size < 50MiB (example)
+- otelcol_process_runtime_heap_alloc_bytes     avg   lt   52428800.0   # Go heap < 50MiB (replacement for pod_rss_bytes)
